@@ -22,6 +22,16 @@ CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 SESSION_NAME="${CLAUDE_SESSION:-default}"
 NOTIFY_FLAG="$CLAUDE_HOME/notifications-enabled"
 
+# Load shared library
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="${SCRIPT_DIR%/hooks}/lib"
+if [ -f "$LIB_DIR/common.sh" ]; then
+    source "$LIB_DIR/common.sh"
+    _USE_SAFE_CONFIG=true
+else
+    _USE_SAFE_CONFIG=false
+fi
+
 # Colors (for terminal output)
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -87,27 +97,32 @@ listener_running() {
 send_telegram() {
     local message="$1"
     local config_file=$(get_config_file "$SESSION_NAME")
-    
+
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         return 1
     fi
-    
-    source "$config_file"
-    
+
+    # Use safe config loading if available
+    if [ "$_USE_SAFE_CONFIG" = true ]; then
+        load_config_safely "$config_file" 2>/dev/null || return 1
+    else
+        source "$config_file"
+    fi
+
     if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
         return 1
     fi
-    
+
     local curl_args=(
         -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
         -d "chat_id=$TELEGRAM_CHAT_ID"
         --data-urlencode "text=$message"
     )
-    
+
     if [ -n "$TELEGRAM_TOPIC_ID" ]; then
         curl_args+=(-d "message_thread_id=$TELEGRAM_TOPIC_ID")
     fi
-    
+
     curl "${curl_args[@]}" > /dev/null 2>&1
 }
 

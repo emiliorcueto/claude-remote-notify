@@ -44,14 +44,28 @@ for arg in "$@"; do
     esac
 done
 
-# Load config or prompt for token
-if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
+# Load shared library for safe config loading
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+
+if [ -f "$LIB_DIR/common.sh" ]; then
+    source "$LIB_DIR/common.sh"
+    # Use safe config loading
+    if [ -f "$CONFIG_FILE" ]; then
+        load_config_safely "$CONFIG_FILE" 2>/dev/null || true
+    fi
+else
+    # Fallback to legacy loading if lib not available
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    fi
 fi
 
 if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
     echo "Enter your Telegram Bot Token:"
-    read -p "> " TELEGRAM_BOT_TOKEN
+    echo -n "> "
+    read -s TELEGRAM_BOT_TOKEN
+    echo ""  # Newline after silent input
 fi
 
 echo ""

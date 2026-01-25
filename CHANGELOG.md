@@ -6,10 +6,15 @@
 - Fix command injection in telegram-listener.py - removed shell=True, use shlex for arg parsing, whitelist safe env vars
 - Fix sed injection in claude-remote - replaced sed with awk for safe placeholder substitution
 - Fix insecure temp files in telegram-preview.sh - use mktemp with cleanup trap
+- Add safe config loading (load_config_safely) - validates ownership, rejects world-writable, parses instead of sourcing
+- Mask sensitive data in logs - bot token and chat ID now properly masked
+- Add input validation for Telegram credentials (bot token, chat ID, topic ID formats)
+- Use silent input (-s) for token entry in get-topic-ids.sh
 
 ### Added
 - Shared security library lib/common.sh with safe temp file handling, variable substitution, input validation
-- Unit tests for security functions (99% coverage)
+- Validation functions: validate_bot_token, validate_chat_id, validate_topic_id, mask_sensitive
+- Unit tests for security functions (94% Python, shell tests passing)
 
 ### Fixed
 - Fix Telegram messages not submitting to Claude (Enter key was interpreted as text)
