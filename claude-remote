@@ -309,6 +309,9 @@ start_session() {
         
         # Create tmux session with environment variables
         tmux new-session -d -s "$tmux_name" -e "CLAUDE_SESSION=$session" -e "TMUX_SESSION=$tmux_name"
+
+        # Enable mouse mode for proper touchpad scrolling (scrollback navigation)
+        tmux set-option -t "$tmux_name" mouse on
         
         # Create a wrapper script that runs Claude and cleans up on exit
         # Use umask subshell to ensure file is created with restricted permissions
@@ -394,6 +397,7 @@ CLEANUP
     echo ""
     echo "  Attaching to tmux session..."
     echo "  (Detach with: Ctrl+b, d)"
+    echo "  (Text select: Option+drag on Mac)"
     echo ""
     
     # Attach to session
