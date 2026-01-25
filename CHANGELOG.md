@@ -10,11 +10,17 @@
 - Mask sensitive data in logs - bot token and chat ID now properly masked
 - Add input validation for Telegram credentials (bot token, chat ID, topic ID formats)
 - Use silent input (-s) for token entry in get-topic-ids.sh
+- Add tmux input sanitization - filter ANSI escapes and control characters to prevent terminal injection
+- Add curl error handling - log failures to notify-errors.log
+- Add URL encoding functions (urlencode, urlencode_shell) for safe URL parameter handling
+- Fix file permission race - use umask subshell when creating cleanup scripts
 
 ### Added
 - Shared security library lib/common.sh with safe temp file handling, variable substitution, input validation
 - Validation functions: validate_bot_token, validate_chat_id, validate_topic_id, mask_sensitive
-- Unit tests for security functions (94% Python, shell tests passing)
+- sanitize_tmux_input() - filters ANSI escapes and control characters
+- urlencode/urlencode_shell - URL encoding functions
+- Unit tests for security functions (96% Python, shell tests passing)
 
 ### Fixed
 - Fix Telegram messages not submitting to Claude (Enter key was interpreted as text)

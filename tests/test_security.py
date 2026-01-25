@@ -418,3 +418,103 @@ class TestMaskSensitive:
         result = mask_sensitive(chat_id, 2, 2)
         assert result == "-1...90"
         assert "12345678" not in result  # Middle should be hidden
+
+
+class TestSanitizeTmuxInput:
+    """Tests for sanitize_tmux_input function."""
+
+    def create_sanitize_function(self):
+        """Create the sanitize function for testing."""
+        import re
+        import unicodedata
+
+        def sanitize_tmux_input(text):
+            if not text:
+                return ""
+            # Remove ANSI CSI escape sequences
+            text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+            # Remove OSC sequences
+            text = re.sub(r'\x1b\][^\x07]*\x07', '', text)
+            # Remove other escape sequences
+            text = re.sub(r'\x1b[^\x1b]*', '', text)
+            # Filter control characters
+            result = []
+            for char in text:
+                if char in '\n\t':
+                    result.append(char)
+                elif ord(char) >= 32:
+                    cat = unicodedata.category(char)
+                    if cat not in ('Cc', 'Cf'):
+                        result.append(char)
+            return ''.join(result)
+
+        return sanitize_tmux_input
+
+    def test_normal_text_unchanged(self):
+        """Normal text should pass through unchanged."""
+        sanitize = self.create_sanitize_function()
+        assert sanitize("Hello, World!") == "Hello, World!"
+        assert sanitize("Multiple\nlines") == "Multiple\nlines"
+        assert sanitize("Tab\there") == "Tab\there"
+
+    def test_ansi_color_codes_removed(self):
+        """ANSI color codes should be removed."""
+        sanitize = self.create_sanitize_function()
+        # Red text escape sequence
+        assert sanitize("\x1b[31mRed text\x1b[0m") == "Red text"
+        # Bold
+        assert sanitize("\x1b[1mBold\x1b[0m") == "Bold"
+        # Multiple codes
+        assert sanitize("\x1b[1;31;40mStyled\x1b[0m") == "Styled"
+
+    def test_cursor_movement_removed(self):
+        """Cursor movement sequences should be removed."""
+        sanitize = self.create_sanitize_function()
+        # Cursor up
+        assert sanitize("Text\x1b[AUp") == "TextUp"
+        # Cursor down
+        assert sanitize("Text\x1b[BDown") == "TextDown"
+        # Cursor position
+        assert sanitize("Text\x1b[10;20HPosition") == "TextPosition"
+
+    def test_osc_sequences_removed(self):
+        """OSC sequences (like title changes) should be removed."""
+        sanitize = self.create_sanitize_function()
+        # Set window title
+        assert sanitize("\x1b]0;New Title\x07Text") == "Text"
+        # Other OSC
+        assert sanitize("Before\x1b]2;Title\x07After") == "BeforeAfter"
+
+    def test_control_characters_removed(self):
+        """Control characters (except newline/tab) should be removed."""
+        sanitize = self.create_sanitize_function()
+        # Bell character
+        assert sanitize("Text\x07bell") == "Textbell"
+        # Null byte
+        assert sanitize("Text\x00null") == "Textnull"
+        # Backspace
+        assert sanitize("Text\x08backspace") == "Textbackspace"
+
+    def test_empty_input(self):
+        """Empty input should return empty string."""
+        sanitize = self.create_sanitize_function()
+        assert sanitize("") == ""
+        assert sanitize(None) == ""
+
+    def test_unicode_preserved(self):
+        """Unicode characters should be preserved."""
+        sanitize = self.create_sanitize_function()
+        assert sanitize("Hello 世界") == "Hello 世界"
+        assert sanitize("Emoji 🎉") == "Emoji 🎉"
+
+    def test_malicious_injection_prevented(self):
+        """Malicious terminal injection attempts should be neutralized."""
+        sanitize = self.create_sanitize_function()
+        # Clear screen attempt
+        result = sanitize("\x1b[2JEvil")
+        assert "\x1b" not in result
+        assert "Evil" in result
+
+        # Terminal reset attempt
+        result = sanitize("\x1bcReset")
+        assert "\x1b" not in result

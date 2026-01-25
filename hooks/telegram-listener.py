@@ -43,6 +43,7 @@ import signal
 import argparse
 import re
 import shlex
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -298,6 +299,42 @@ def set_message_reaction(message_id, emoji="👍"):
 # TMUX INTERACTION
 # =============================================================================
 
+def sanitize_tmux_input(text):
+    """Sanitize input before sending to tmux.
+
+    Removes:
+    - ANSI escape sequences (colors, cursor movement, etc.)
+    - OSC sequences (terminal title, etc.)
+    - Control characters (except newline and tab)
+
+    This prevents malicious Telegram messages from disrupting the terminal.
+    """
+    if not text:
+        return ""
+
+    # Remove ANSI CSI escape sequences (e.g., colors, cursor movement)
+    text = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+
+    # Remove OSC sequences (e.g., terminal title changes)
+    text = re.sub(r'\x1b\][^\x07]*\x07', '', text)
+
+    # Remove other escape sequences
+    text = re.sub(r'\x1b[^\x1b]*', '', text)
+
+    # Filter control characters (preserve newline and tab)
+    result = []
+    for char in text:
+        if char in '\n\t':
+            result.append(char)
+        elif ord(char) >= 32:
+            # Check unicode category - skip control chars
+            cat = unicodedata.category(char)
+            if cat not in ('Cc', 'Cf'):
+                result.append(char)
+
+    return ''.join(result)
+
+
 def tmux_session_exists():
     """Check if tmux session exists"""
     result = subprocess.run(
@@ -311,16 +348,25 @@ def inject_to_tmux(text):
 
     Uses -l (literal) flag to handle multi-line text and special characters,
     then sends Enter separately to submit the prompt.
+
+    Input is sanitized to remove ANSI escapes and control characters.
     """
     if not tmux_session_exists():
         log(f"tmux session '{TMUX_SESSION}' not found", "WARN")
+        return False
+
+    # Sanitize input to prevent terminal escape sequence injection
+    sanitized_text = sanitize_tmux_input(text)
+
+    if not sanitized_text:
+        log("Input was empty after sanitization", "WARN")
         return False
 
     try:
         # Send text literally (handles multi-line, special chars)
         # The '--' prevents text starting with '-' from being parsed as options
         subprocess.run(
-            ['tmux', 'send-keys', '-t', TMUX_SESSION, '-l', '--', text],
+            ['tmux', 'send-keys', '-t', TMUX_SESSION, '-l', '--', sanitized_text],
             check=True,
             capture_output=True
         )
