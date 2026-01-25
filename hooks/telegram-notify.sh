@@ -57,15 +57,28 @@ if [ ! -f "$NOTIFY_FLAG_FILE" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Load configuration (session-specific, fallback to global)
+# Load shared library and configuration
 # -----------------------------------------------------------------------------
 
-if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
-elif [ -f "$GLOBAL_CONFIG" ]; then
-    source "$GLOBAL_CONFIG"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="${SCRIPT_DIR%/hooks}/lib"
+
+# Source shared library if available
+if [ -f "$LIB_DIR/common.sh" ]; then
+    source "$LIB_DIR/common.sh"
+    # Use safe config loading
+    if ! load_session_config "$SESSION_NAME" "$CLAUDE_HOME" 2>/dev/null; then
+        exit 0
+    fi
 else
-    exit 0
+    # Fallback to legacy loading if lib not available
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    elif [ -f "$GLOBAL_CONFIG" ]; then
+        source "$GLOBAL_CONFIG"
+    else
+        exit 0
+    fi
 fi
 
 if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then

@@ -342,3 +342,79 @@ class TestShlexSplit:
         result = shlex.split('; rm -rf /')
         # shlex treats ; as part of the token, not a separator
         assert ';' in result[0] or result == [';', 'rm', '-rf', '/']
+
+
+class TestMaskSensitive:
+    """Tests for mask_sensitive function."""
+
+    def test_mask_long_string(self):
+        """Long string should be masked with visible start and end."""
+        def mask_sensitive(value, show_start=3, show_end=2):
+            if not value:
+                return "(not set)"
+            value = str(value)
+            if len(value) <= show_start + show_end + 3:
+                return "***"
+            return f"{value[:show_start]}...{value[-show_end:]}"
+
+        result = mask_sensitive("1234567890abcdefghij", 3, 2)
+        assert result == "123...ij"
+
+    def test_mask_short_string(self):
+        """Short string should be fully masked."""
+        def mask_sensitive(value, show_start=3, show_end=2):
+            if not value:
+                return "(not set)"
+            value = str(value)
+            if len(value) <= show_start + show_end + 3:
+                return "***"
+            return f"{value[:show_start]}...{value[-show_end:]}"
+
+        result = mask_sensitive("short", 3, 2)
+        assert result == "***"
+
+    def test_mask_empty_string(self):
+        """Empty string should return not set message."""
+        def mask_sensitive(value, show_start=3, show_end=2):
+            if not value:
+                return "(not set)"
+            value = str(value)
+            if len(value) <= show_start + show_end + 3:
+                return "***"
+            return f"{value[:show_start]}...{value[-show_end:]}"
+
+        result = mask_sensitive("", 3, 2)
+        assert result == "(not set)"
+
+        result = mask_sensitive(None, 3, 2)
+        assert result == "(not set)"
+
+    def test_mask_bot_token(self):
+        """Bot token should be masked appropriately."""
+        def mask_sensitive(value, show_start=3, show_end=2):
+            if not value:
+                return "(not set)"
+            value = str(value)
+            if len(value) <= show_start + show_end + 3:
+                return "***"
+            return f"{value[:show_start]}...{value[-show_end:]}"
+
+        token = "123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456"
+        result = mask_sensitive(token, 5, 3)
+        assert result == "12345...456"
+        assert "ABCdef" not in result  # Middle should be hidden
+
+    def test_mask_chat_id(self):
+        """Chat ID should be masked appropriately."""
+        def mask_sensitive(value, show_start=3, show_end=2):
+            if not value:
+                return "(not set)"
+            value = str(value)
+            if len(value) <= show_start + show_end + 3:
+                return "***"
+            return f"{value[:show_start]}...{value[-show_end:]}"
+
+        chat_id = "-1001234567890"
+        result = mask_sensitive(chat_id, 2, 2)
+        assert result == "-1...90"
+        assert "12345678" not in result  # Middle should be hidden

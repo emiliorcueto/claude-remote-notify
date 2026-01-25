@@ -79,11 +79,42 @@ listener_running() {
 get_listener_pid() {
     local session="$1"
     local pid_file="$PIDS_DIR/listener-$session.pid"
-    
+
     if [ -f "$pid_file" ]; then
         cat "$pid_file"
     else
         echo ""
+    fi
+}
+
+# Validate Telegram bot token format
+# Format: 8-10 digits, colon, 35 alphanumeric chars
+validate_bot_token() {
+    local token="$1"
+    if [[ "$token" =~ ^[0-9]{8,10}:[A-Za-z0-9_-]{35}$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Validate Telegram chat ID format (integer, can be negative for groups)
+validate_chat_id() {
+    local chat_id="$1"
+    if [[ "$chat_id" =~ ^-?[0-9]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Validate Telegram topic ID format (positive integer, optional)
+validate_topic_id() {
+    local topic_id="$1"
+    if [ -z "$topic_id" ] || [[ "$topic_id" =~ ^[0-9]+$ ]]; then
+        return 0
+    else
+        return 1
     fi
 }
 
@@ -441,40 +472,73 @@ create_new_session() {
     fi
     
     # Bot token
-    if [ -n "$default_token" ]; then
-        echo "Found existing bot token: ${default_token:0:10}...${default_token: -5}"
-        read -p "Use this token? (Y/n): " use_existing
-        if [[ "$use_existing" =~ ^[Nn]$ ]]; then
-            read -p "Bot Token: " bot_token
+    bot_token=""
+    while true; do
+        if [ -n "$default_token" ]; then
+            echo "Found existing bot token: ${default_token:0:5}...${default_token: -3}"
+            read -p "Use this token? (Y/n): " use_existing
+            if [[ "$use_existing" =~ ^[Nn]$ ]]; then
+                echo -n "Bot Token: "
+                read -s bot_token
+                echo ""
+            else
+                bot_token="$default_token"
+            fi
         else
-            bot_token="$default_token"
+            echo "Get your bot token from @BotFather on Telegram"
+            echo -n "Bot Token: "
+            read -s bot_token
+            echo ""
         fi
-    else
-        echo "Get your bot token from @BotFather on Telegram"
-        read -p "Bot Token: " bot_token
-    fi
-    
+
+        if validate_bot_token "$bot_token"; then
+            break
+        else
+            warn "Invalid bot token format. Expected: 123456789:ABCdef..."
+            default_token=""  # Clear to force re-prompt
+        fi
+    done
+
     # Chat/Group ID
-    echo ""
-    echo "For Topics support, use a Group ID (negative number starting with -100)"
-    if [ -n "$default_chat" ]; then
-        echo "Found existing chat ID: $default_chat"
-        read -p "Use this? (Y/n): " use_existing
-        if [[ "$use_existing" =~ ^[Nn]$ ]]; then
-            read -p "Chat/Group ID: " chat_id
+    chat_id=""
+    while true; do
+        echo ""
+        echo "For Topics support, use a Group ID (negative number starting with -100)"
+        if [ -n "$default_chat" ]; then
+            echo "Found existing chat ID: ${default_chat:0:3}...${default_chat: -3}"
+            read -p "Use this? (Y/n): " use_existing
+            if [[ "$use_existing" =~ ^[Nn]$ ]]; then
+                read -p "Chat/Group ID: " chat_id
+            else
+                chat_id="$default_chat"
+            fi
         else
-            chat_id="$default_chat"
+            read -p "Chat/Group ID: " chat_id
         fi
-    else
-        read -p "Chat/Group ID: " chat_id
-    fi
-    
+
+        if validate_chat_id "$chat_id"; then
+            break
+        else
+            warn "Invalid chat ID format. Must be an integer (e.g., -1001234567890)"
+            default_chat=""  # Clear to force re-prompt
+        fi
+    done
+
     # Topic ID
-    echo ""
-    echo "Topic ID (for Forum groups with Topics enabled)"
-    echo "  - Leave empty for direct messages or non-forum groups"
-    echo "  - Get Topic ID: send a message in the topic, then check getUpdates"
-    read -p "Topic ID (optional): " topic_id
+    topic_id=""
+    while true; do
+        echo ""
+        echo "Topic ID (for Forum groups with Topics enabled)"
+        echo "  - Leave empty for direct messages or non-forum groups"
+        echo "  - Get Topic ID: send a message in the topic, then check getUpdates"
+        read -p "Topic ID (optional): " topic_id
+
+        if validate_topic_id "$topic_id"; then
+            break
+        else
+            warn "Invalid topic ID format. Must be a positive integer or empty."
+        fi
+    done
     
     # Create config file
     mkdir -p "$SESSIONS_DIR"

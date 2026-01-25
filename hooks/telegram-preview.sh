@@ -110,13 +110,27 @@ trap 'rm -f "$TEMP_HTML"' EXIT
 # Load Configuration
 # -----------------------------------------------------------------------------
 
-if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
-elif [ -f "$GLOBAL_CONFIG" ]; then
-    source "$GLOBAL_CONFIG"
+# Load shared library for safe config loading
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="${SCRIPT_DIR%/hooks}/lib"
+
+if [ -f "$LIB_DIR/common.sh" ]; then
+    source "$LIB_DIR/common.sh"
+    # Use safe config loading
+    if ! load_session_config "$SESSION_NAME" "$CLAUDE_HOME"; then
+        echo "Error: Failed to load config for session '$SESSION_NAME'"
+        exit 1
+    fi
 else
-    echo "Error: No config found for session '$SESSION_NAME'"
-    exit 1
+    # Fallback to legacy loading if lib not available
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    elif [ -f "$GLOBAL_CONFIG" ]; then
+        source "$GLOBAL_CONFIG"
+    else
+        echo "Error: No config found for session '$SESSION_NAME'"
+        exit 1
+    fi
 fi
 
 if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then

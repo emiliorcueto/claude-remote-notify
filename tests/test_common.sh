@@ -427,6 +427,191 @@ test_logging_functions() {
 }
 
 # =============================================================================
+# TESTS: SAFE CONFIG LOADING
+# =============================================================================
+
+test_load_config_safely() {
+    echo ""
+    echo "Testing: load_config_safely"
+
+    setup
+
+    # Create a valid config file
+    local config_file="$TEMP_DIR/test.conf"
+    cat > "$config_file" << 'EOF'
+# Test config
+TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789"
+TELEGRAM_CHAT_ID="-1001234567890"
+TELEGRAM_TOPIC_ID="123"
+TMUX_SESSION="claude-test"
+# Invalid key should be ignored
+MALICIOUS_VAR="should-not-load"
+EOF
+    chmod 600 "$config_file"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Load config
+        load_config_safely "$config_file"
+
+        # Check whitelisted vars loaded
+        assert_not_empty "$TELEGRAM_BOT_TOKEN" "Bot token should be loaded"
+        assert_not_empty "$TELEGRAM_CHAT_ID" "Chat ID should be loaded"
+        assert_equals "123" "$TELEGRAM_TOPIC_ID" "Topic ID should be loaded"
+        assert_equals "claude-test" "$TMUX_SESSION" "tmux session should be loaded"
+
+        # Check non-whitelisted var not loaded
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ -z "${MALICIOUS_VAR:-}" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Non-whitelisted var not loaded"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Non-whitelisted var should not be loaded"
+        fi
+    )
+
+    teardown
+}
+
+test_load_config_safely_rejects_world_writable() {
+    echo ""
+    echo "Testing: load_config_safely rejects world-writable"
+
+    setup
+
+    local config_file="$TEMP_DIR/unsafe.conf"
+    echo 'TELEGRAM_BOT_TOKEN="test"' > "$config_file"
+    chmod 666 "$config_file"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        assert_command_fails "World-writable config rejected" \
+            load_config_safely "$config_file"
+    )
+
+    teardown
+}
+
+# =============================================================================
+# TESTS: TELEGRAM VALIDATION
+# =============================================================================
+
+test_validate_bot_token() {
+    echo ""
+    echo "Testing: validate_bot_token"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Valid tokens
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if validate_bot_token "123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Valid token accepted"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Valid token should be accepted"
+        fi
+
+        # Invalid tokens
+        assert_command_fails "Token without colon rejected" validate_bot_token "123456789ABCdef"
+        assert_command_fails "Token with short ID rejected" validate_bot_token "123:ABCdefGHIjklMNOpqrsTUVwxyz123456"
+        assert_command_fails "Empty token rejected" validate_bot_token ""
+    )
+}
+
+test_validate_chat_id() {
+    echo ""
+    echo "Testing: validate_chat_id"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Valid chat IDs
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if validate_chat_id "-1001234567890"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Valid negative group ID accepted"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Valid negative group ID should be accepted"
+        fi
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if validate_chat_id "123456789"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Valid positive user ID accepted"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Valid positive user ID should be accepted"
+        fi
+
+        # Invalid chat IDs
+        assert_command_fails "Chat ID with letters rejected" validate_chat_id "abc123"
+        assert_command_fails "Chat ID with spaces rejected" validate_chat_id "123 456"
+    )
+}
+
+test_validate_topic_id() {
+    echo ""
+    echo "Testing: validate_topic_id"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Valid topic IDs
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if validate_topic_id "123"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Valid topic ID accepted"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Valid topic ID should be accepted"
+        fi
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if validate_topic_id ""; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Empty topic ID accepted"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Empty topic ID should be accepted"
+        fi
+
+        # Invalid topic IDs
+        assert_command_fails "Negative topic ID rejected" validate_topic_id "-123"
+        assert_command_fails "Topic ID with letters rejected" validate_topic_id "abc"
+    )
+}
+
+# =============================================================================
+# TESTS: SENSITIVE DATA MASKING
+# =============================================================================
+
+test_mask_sensitive() {
+    echo ""
+    echo "Testing: mask_sensitive"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+
+        result=$(mask_sensitive "1234567890abcdefghij" 3 2)
+        assert_equals "123...ij" "$result" "Long string masked correctly"
+
+        result=$(mask_sensitive "short" 3 2)
+        assert_equals "***" "$result" "Short string fully masked"
+
+        result=$(mask_sensitive "" 3 2)
+        assert_equals "***" "$result" "Empty string masked"
+    )
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -445,6 +630,12 @@ run_all_tests() {
     test_validate_path_in_dir
     test_validate_script
     test_logging_functions
+    test_load_config_safely
+    test_load_config_safely_rejects_world_writable
+    test_validate_bot_token
+    test_validate_chat_id
+    test_validate_topic_id
+    test_mask_sensitive
 
     echo ""
     echo "=============================================="

@@ -138,6 +138,25 @@ def validate_script_path(script_path):
 
     return path
 
+
+def mask_sensitive(value, show_start=3, show_end=2):
+    """Mask sensitive string for safe logging.
+
+    Args:
+        value: The string to mask
+        show_start: Number of chars to show at start (default 3)
+        show_end: Number of chars to show at end (default 2)
+
+    Returns:
+        Masked string like "abc...xy"
+    """
+    if not value:
+        return "(not set)"
+    value = str(value)
+    if len(value) <= show_start + show_end + 3:
+        return "***"
+    return f"{value[:show_start]}...{value[-show_end:]}"
+
 # =============================================================================
 # LOGGING
 # =============================================================================
@@ -633,8 +652,8 @@ def main():
         log("TELEGRAM_CHAT_ID not configured", "ERROR")
         sys.exit(1)
     
-    log(f"Bot Token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:]}")
-    log(f"Chat ID: {CHAT_ID}")
+    log(f"Bot Token: {mask_sensitive(BOT_TOKEN, 5, 3)}")
+    log(f"Chat ID: {mask_sensitive(CHAT_ID, 2, 2)}")
     log(f"Topic ID: {TOPIC_ID or '(none - processing all messages)'}")
     log(f"tmux Session: {TMUX_SESSION}")
     
