@@ -684,6 +684,10 @@ main() {
     # Check if already set up
     if ! $force && check_existing_setup; then
         success "Claude Remote is already installed"
+
+        # Always update files to get latest versions
+        info "Updating scripts and hooks..."
+        install_files
         echo ""
 
         # Show existing sessions
@@ -707,6 +711,7 @@ main() {
         case "$choice" in
             1)
                 add_sessions
+                success "Done! Restart sessions to apply any script updates."
                 ;;
             2)
                 force=true

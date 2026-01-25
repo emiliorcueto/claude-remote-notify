@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- Fix Telegram messages not submitting to Claude (Enter key was interpreted as text)
+- Use tmux send-keys `-l` (literal) mode for proper multi-line message support
+- Fix setup script not updating hooks/scripts when already installed
 - Fix get-topic-ids.sh JSON parse error caused by pipe/heredoc stdin conflict
 - Add webhook detection - webhooks block getUpdates, now auto-removed
 - Fix PATH setup for different shells (zsh, bash, fish) and OS (macOS, Linux)

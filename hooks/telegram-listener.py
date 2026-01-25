@@ -216,17 +216,31 @@ def tmux_session_exists():
     return result.returncode == 0
 
 def inject_to_tmux(text):
-    """Inject text into tmux session as keyboard input"""
+    """Inject text into tmux session as keyboard input.
+
+    Uses -l (literal) flag to handle multi-line text and special characters,
+    then sends Enter separately to submit the prompt.
+    """
     if not tmux_session_exists():
         log(f"tmux session '{TMUX_SESSION}' not found", "WARN")
         return False
-    
+
     try:
+        # Send text literally (handles multi-line, special chars)
+        # The '--' prevents text starting with '-' from being parsed as options
         subprocess.run(
-            ['tmux', 'send-keys', '-t', TMUX_SESSION, text, 'Enter'],
+            ['tmux', 'send-keys', '-t', TMUX_SESSION, '-l', '--', text],
             check=True,
             capture_output=True
         )
+
+        # Send Enter separately to submit the prompt
+        subprocess.run(
+            ['tmux', 'send-keys', '-t', TMUX_SESSION, 'Enter'],
+            check=True,
+            capture_output=True
+        )
+
         log(f"Injected: {text[:50]}{'...' if len(text) > 50 else ''}")
         return True
     except subprocess.CalledProcessError as e:
