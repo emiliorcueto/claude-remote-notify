@@ -102,7 +102,9 @@ CONFIG_FILE="$SESSIONS_DIR/$SESSION_NAME.conf"
 GLOBAL_CONFIG="$CLAUDE_HOME/telegram-remote.conf"
 TMUX_SESSION="${TMUX_SESSION:-claude-$SESSION_NAME}"
 
-TEMP_HTML="/tmp/claude-terminal-$SESSION_NAME-$(date +%Y%m%d-%H%M%S).html"
+# Use mktemp for secure temp file creation (prevents symlink attacks)
+TEMP_HTML=$(mktemp -t "claude-terminal-${SESSION_NAME}-XXXXXX.html")
+trap 'rm -f "$TEMP_HTML"' EXIT
 
 # -----------------------------------------------------------------------------
 # Load Configuration
@@ -340,8 +342,7 @@ main() {
         echo "✗ Failed to send"
         exit 1
     fi
-    
-    rm -f "$TEMP_HTML"
+    # Note: TEMP_HTML cleanup handled by EXIT trap
 }
 
 main
