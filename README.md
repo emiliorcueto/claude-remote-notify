@@ -31,21 +31,40 @@ Control multiple Claude CLI sessions remotely via Telegram, with each session is
 
 ## Quick Start
 
-### 1. Create Telegram Bot & Group
+### 1. Create Telegram Bot
 
 ```bash
-# 1. Create bot with @BotFather → get token
-# 2. Create a Telegram Group
-# 3. Add your bot to the group (make it admin)
-# 4. Enable Topics: Group Settings → Topics → Enable
-# 5. Create topics for each session (e.g., "project-alpha", "project-beta")
+# In Telegram, message @BotFather:
+/newbot              # Create bot, save the token
+/mybots              # Select your new bot
+→ Bot Settings
+→ Group Privacy
+→ Turn off           # CRITICAL! See note below
 ```
 
-### 2. Get Group & Topic IDs
+> ⚠️ **Group Privacy MUST be disabled.** With privacy ON, bot only receives `/commands` in forum groups - regular messages like "yes, continue" are ignored.
+
+### 2. Create Group & Add Bot
+
+```bash
+# 1. Create a Telegram Group
+# 2. Enable Topics: Group Settings → Topics → Enable
+# 3. Add bot to group
+# 4. Make bot an admin
+# 5. Create topics (e.g., "project-alpha", "project-beta")
+```
+
+> ⚠️ **If you changed Group Privacy after the bot was already in a group**, you must **remove the bot and re-add it** for the setting to take effect.
+
+### 3. Get Group & Topic IDs
 
 ```bash
 # Send a message in each topic, then run:
 ./get-topic-ids.sh
+
+# If no messages found, use poll mode:
+./get-topic-ids.sh --poll
+# Then send messages while it's running
 
 # Output shows:
 #   Chat ID: -1001234567890
@@ -53,13 +72,13 @@ Control multiple Claude CLI sessions remotely via Telegram, with each session is
 #   → Topic ID: 456  (for "project-beta" topic)
 ```
 
-### 3. Install
+### 4. Install
 
 ```bash
 ./setup-telegram-remote.sh
 ```
 
-### 4. Create Session Configs
+### 5. Create Session Configs
 
 ```bash
 # Interactive setup:
@@ -72,7 +91,7 @@ TELEGRAM_TOPIC_ID="123"
 TMUX_SESSION="claude-myproject"
 ```
 
-### 5. Start Sessions
+### 6. Start Sessions
 
 ```bash
 # Start a session
@@ -315,14 +334,28 @@ claude-remote
 
 ### Bot not receiving messages in group
 
-1. Make bot an admin in the group
-2. Disable "Group Privacy" in @BotFather: `/mybots` → Bot Settings → Group Privacy → Disable
+1. **Disable Group Privacy** in @BotFather:
+   - `/mybots` → Select bot → Bot Settings → Group Privacy → Turn off
+2. **Remove and re-add bot** to the group (required after changing privacy setting!)
+3. Make bot an admin in the group
+4. Test with `./get-topic-ids.sh --poll` - send a regular message (not /command)
+
+### Only /commands work, regular messages ignored
+
+This means Group Privacy is still enabled OR the bot needs to be re-added:
+
+1. Verify in @BotFather: `/mybots` → Bot Settings → Group Privacy → should say "disabled"
+2. **Remove bot from group completely**
+3. **Add bot back to group**
+4. Make bot admin again
+5. Test with `./get-topic-ids.sh --poll`
 
 ### Topic ID not appearing
 
 1. Ensure Topics are enabled: Group Settings → Topics
-2. Send a new message in the topic
-3. Run `get-topic-ids.sh` again
+2. Use poll mode: `./get-topic-ids.sh --poll`
+3. Send a message while poll is running
+4. If only `/commands` appear, see "Only /commands work" above
 
 ### HTML preview not showing colors
 
@@ -358,21 +391,49 @@ claude-remote
 | Chat ID empty during setup | Setup continues but test message will fail |
 | Invalid bot token | Listener starts but fails to connect; check logs |
 
-## Bot Privacy Mode (Important!)
+## Bot Privacy Mode (CRITICAL!)
 
-Telegram bots have "Group Privacy" enabled by default. This means bots in groups can **only** see:
-- Messages starting with `/`
-- Messages that @mention the bot
-- Replies to bot messages
+Telegram bots have "Group Privacy" **enabled by default**. With privacy ON, bots can **only** see:
+- Messages starting with `/` (commands)
+- ~~Messages that @mention the bot~~ *(does NOT work in forum/topic groups!)*
+- ~~Replies to bot messages~~ *(does NOT work in forum/topic groups!)*
 
-**If you don't disable Group Privacy, your responses like "yes, continue" won't reach Claude!**
+**⚠️ In forum groups with Topics, ONLY `/commands` work until you disable Group Privacy!**
 
-To disable:
-1. Message @BotFather
-2. `/mybots` → Select your bot
-3. Bot Settings → Group Privacy → **Disable**
+### How to Disable Group Privacy
 
-> **Note:** This is about what messages the bot can "hear" - not about your data privacy. Your messages still go through Telegram's servers (unavoidable), but the listener runs entirely on your local machine.
+```
+1. Open Telegram, message @BotFather
+2. Send: /mybots
+3. Select your bot (e.g., @ERC_SessionBot)
+4. Tap "Bot Settings"
+5. Tap "Group Privacy"
+6. Current status shown - tap "Turn off" if enabled
+7. You should see: "Privacy mode is disabled for YourBot"
+```
+
+### Verifying It Worked
+
+After disabling, the bot must be **removed and re-added** to the group for the change to take effect:
+
+```
+1. Remove bot from group (kick)
+2. Add bot back to group
+3. Make bot admin again
+4. Send a regular message (not a /command)
+5. Run: ./get-topic-ids.sh --poll
+6. If you see the message, it's working!
+```
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---------|-------|
+| Only `/commands` received | Group Privacy still ON, or bot needs re-add |
+| @mentions not received | Normal in forum groups - disable privacy instead |
+| Setting shows "disabled" but doesn't work | Remove and re-add bot to group |
+
+> **Note:** "Group Privacy" controls what messages the bot can "hear" - not your data privacy. Messages go through Telegram servers regardless, but the listener runs on your local machine.
 
 ## Requirements
 
