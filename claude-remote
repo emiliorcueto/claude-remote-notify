@@ -1,0 +1,589 @@
+#!/bin/bash
+# =============================================================================
+# claude-remote - Launch Claude CLI with Telegram remote management
+# =============================================================================
+#
+# Multi-session support with Telegram Topics
+#
+# Usage:
+#   claude-remote [SESSION_NAME] [OPTIONS]
+#
+# Options:
+#   --status        Show status of session(s)
+#   --kill          Stop session and listener
+#   --list          List all active sessions
+#   --new           Create new session (interactive setup)
+#
+# Examples:
+#   claude-remote                  # Start/attach "default" session
+#   claude-remote myproject        # Start/attach "myproject" session
+#   claude-remote myproject --kill # Stop myproject session
+#   claude-remote --list           # Show all sessions
+#   claude-remote --new            # Create new session config
+#
+# =============================================================================
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Configuration
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+SESSIONS_DIR="$CLAUDE_HOME/sessions"
+PIDS_DIR="$CLAUDE_HOME/pids"
+LOGS_DIR="$CLAUDE_HOME/logs"
+HOOKS_DIR="$CLAUDE_HOME/hooks"
+
+# Ensure directories exist
+mkdir -p "$SESSIONS_DIR" "$PIDS_DIR" "$LOGS_DIR"
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+info()    { echo -e "${BLUE}►${NC} $1"; }
+success() { echo -e "${GREEN}✓${NC} $1"; }
+warn()    { echo -e "${YELLOW}!${NC} $1"; }
+error()   { echo -e "${RED}✗${NC} $1"; exit 1; }
+
+get_tmux_session_name() {
+    local session="$1"
+    echo "claude-$session"
+}
+
+session_exists() {
+    local session="$1"
+    local tmux_name=$(get_tmux_session_name "$session")
+    tmux has-session -t "$tmux_name" 2>/dev/null
+}
+
+listener_running() {
+    local session="$1"
+    local pid_file="$PIDS_DIR/listener-$session.pid"
+    
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_listener_pid() {
+    local session="$1"
+    local pid_file="$PIDS_DIR/listener-$session.pid"
+    
+    if [ -f "$pid_file" ]; then
+        cat "$pid_file"
+    else
+        echo ""
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Session Management
+# -----------------------------------------------------------------------------
+
+list_sessions() {
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}                    Claude Sessions                         ${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    
+    # Find all session configs
+    local has_sessions=false
+    
+    shopt -s nullglob
+    for config in "$SESSIONS_DIR"/*.conf; do
+        has_sessions=true
+        
+        local session=$(basename "$config" .conf)
+        local tmux_name=$(get_tmux_session_name "$session")
+        
+        # Check statuses
+        local tmux_status="❌"
+        local listener_status="❌"
+        
+        if session_exists "$session"; then
+            tmux_status="✅"
+        fi
+        
+        if listener_running "$session"; then
+            listener_status="✅"
+        fi
+        
+        # Get topic ID from config
+        local topic_id=""
+        if [ -f "$config" ]; then
+            topic_id=$(grep "TELEGRAM_TOPIC_ID" "$config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        fi
+        
+        echo -e "  ${GREEN}$session${NC}"
+        echo "    tmux ($tmux_name): $tmux_status"
+        echo "    Listener: $listener_status"
+        if [ -n "$topic_id" ]; then
+            echo "    Topic ID: $topic_id"
+        fi
+        echo ""
+    done
+    shopt -u nullglob
+    
+    # Check for legacy/global config
+    if [ -f "$CLAUDE_HOME/telegram-remote.conf" ] && ! $has_sessions; then
+        echo -e "  ${YELLOW}(Using global config - no per-session configs found)${NC}"
+        echo ""
+    fi
+    
+    if ! $has_sessions && [ ! -f "$CLAUDE_HOME/telegram-remote.conf" ]; then
+        echo "  No sessions configured."
+        echo ""
+        echo "  Run: claude-remote --new"
+        echo ""
+    fi
+}
+
+show_status() {
+    local session="$1"
+    
+    if [ -z "$session" ]; then
+        list_sessions
+        return
+    fi
+    
+    local tmux_name=$(get_tmux_session_name "$session")
+    local config="$SESSIONS_DIR/$session.conf"
+    
+    echo -e "${CYAN}═══ Session: $session ═══${NC}"
+    echo ""
+    
+    # Config status
+    if [ -f "$config" ]; then
+        success "Config: $config"
+        
+        local topic_id=$(grep "TELEGRAM_TOPIC_ID" "$config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        if [ -n "$topic_id" ]; then
+            echo "    Topic ID: $topic_id"
+        fi
+    else
+        warn "Config not found: $config"
+    fi
+    
+    # tmux status
+    if session_exists "$session"; then
+        success "tmux session: $tmux_name (running)"
+    else
+        warn "tmux session: $tmux_name (not running)"
+    fi
+    
+    # Listener status
+    if listener_running "$session"; then
+        local pid=$(get_listener_pid "$session")
+        success "Listener: PID $pid (running)"
+    else
+        warn "Listener: not running"
+    fi
+    
+    echo ""
+}
+
+# -----------------------------------------------------------------------------
+# Start Session
+# -----------------------------------------------------------------------------
+
+check_topic_conflicts() {
+    local session="$1"
+    local config="$SESSIONS_DIR/$session.conf"
+    
+    # Get this session's topic ID
+    local my_topic=""
+    if [ -f "$config" ]; then
+        my_topic=$(grep "TELEGRAM_TOPIC_ID" "$config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+    fi
+    
+    # If no topic ID, warn if other sessions exist
+    if [ -z "$my_topic" ]; then
+        local session_count=0
+        shopt -s nullglob
+        for c in "$SESSIONS_DIR"/*.conf; do
+            ((session_count++))
+        done
+        shopt -u nullglob
+        
+        if [ "$session_count" -gt 1 ]; then
+            warn "No Topic ID configured for '$session'"
+            warn "Messages may intermingle with other sessions!"
+            echo "  Configure Topic ID: edit $config"
+            echo "  Or run: get-topic-ids.sh"
+            echo ""
+            read -p "Continue anyway? (y/N): " cont
+            if [[ ! "$cont" =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+        fi
+        return
+    fi
+    
+    # Check if another listener is using the same Topic ID
+    shopt -s nullglob
+    for pid_file in "$PIDS_DIR"/listener-*.pid; do
+        local other_session=$(basename "$pid_file" .pid | sed 's/listener-//')
+        
+        # Skip self
+        [ "$other_session" = "$session" ] && continue
+        
+        # Check if that listener is running
+        if [ -f "$pid_file" ]; then
+            local pid=$(cat "$pid_file")
+            if kill -0 "$pid" 2>/dev/null; then
+                # Get that session's topic ID
+                local other_config="$SESSIONS_DIR/$other_session.conf"
+                if [ -f "$other_config" ]; then
+                    local other_topic=$(grep "TELEGRAM_TOPIC_ID" "$other_config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+                    
+                    if [ "$my_topic" = "$other_topic" ] && [ -n "$my_topic" ]; then
+                        error "Topic ID $my_topic is already in use by session '$other_session'"
+                    fi
+                fi
+            fi
+        fi
+    done
+    shopt -u nullglob
+}
+
+start_session() {
+    local session="$1"
+    local tmux_name=$(get_tmux_session_name "$session")
+    local config="$SESSIONS_DIR/$session.conf"
+    
+    # Check for config (session-specific or global)
+    if [ ! -f "$config" ] && [ ! -f "$CLAUDE_HOME/telegram-remote.conf" ]; then
+        error "No config found. Run: claude-remote --new"
+    fi
+    
+    # Check for Topic ID conflicts
+    check_topic_conflicts "$session"
+    
+    info "Starting session: $session"
+    
+    # Create or attach to tmux session
+    if ! session_exists "$session"; then
+        info "Creating tmux session: $tmux_name"
+        
+        # Create tmux session with environment variables
+        tmux new-session -d -s "$tmux_name" -e "CLAUDE_SESSION=$session" -e "TMUX_SESSION=$tmux_name"
+        
+        # Create a wrapper script that runs Claude and cleans up on exit
+        local cleanup_script="$CLAUDE_HOME/cleanup-$session.sh"
+        cat > "$cleanup_script" << CLEANUP
+#!/bin/bash
+# Auto-generated cleanup script for session: $session
+export CLAUDE_SESSION='$session'
+export TMUX_SESSION='$tmux_name'
+
+# Run Claude
+claude
+
+# Claude exited - offer cleanup
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Claude exited. Session: $session"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Options:"
+echo "  • Type 'claude' to restart Claude"
+echo "  • Type 'exit' to close session (stops listener too)"
+echo "  • Press Ctrl+b, d to detach (keeps running)"
+echo ""
+
+# Set trap to cleanup on shell exit
+trap 'PID_FILE="$HOME/.claude/pids/listener-$session.pid"; if [ -f "\$PID_FILE" ]; then kill \$(cat "\$PID_FILE") 2>/dev/null; rm -f "\$PID_FILE"; fi' EXIT
+
+# Keep shell alive
+exec bash
+CLEANUP
+        chmod +x "$cleanup_script"
+        
+        # Start the wrapper script in tmux
+        tmux send-keys -t "$tmux_name" "bash '$cleanup_script'" Enter
+        
+        success "tmux session created"
+    else
+        info "tmux session already exists"
+    fi
+    
+    # Start listener if not running
+    if ! listener_running "$session"; then
+        info "Starting Telegram listener..."
+        
+        nohup python3 "$HOOKS_DIR/telegram-listener.py" --session "$session" \
+            >> "$LOGS_DIR/listener-$session.log" 2>&1 &
+        
+        sleep 1
+        
+        if listener_running "$session"; then
+            success "Listener started (PID: $(get_listener_pid "$session"))"
+        else
+            warn "Listener may have failed to start. Check: $LOGS_DIR/listener-$session.log"
+        fi
+    else
+        info "Listener already running (PID: $(get_listener_pid "$session"))"
+    fi
+    
+    # Send startup notification if enabled
+    if [ -f "$CLAUDE_HOME/notifications-enabled" ]; then
+        "$HOOKS_DIR/telegram-notify.sh" "notification" --session "$session" 2>/dev/null &
+    fi
+    
+    echo ""
+    success "Session '$session' ready!"
+    echo ""
+    echo "  Attaching to tmux session..."
+    echo "  (Detach with: Ctrl+b, d)"
+    echo ""
+    
+    # Attach to session
+    tmux attach-session -t "$tmux_name"
+}
+
+# -----------------------------------------------------------------------------
+# Stop Session
+# -----------------------------------------------------------------------------
+
+stop_session() {
+    local session="$1"
+    local tmux_name=$(get_tmux_session_name "$session")
+    
+    info "Stopping session: $session"
+    
+    # Stop listener
+    if listener_running "$session"; then
+        local pid=$(get_listener_pid "$session")
+        info "Stopping listener (PID: $pid)"
+        kill "$pid" 2>/dev/null || true
+        rm -f "$PIDS_DIR/listener-$session.pid"
+        success "Listener stopped"
+    else
+        info "Listener not running"
+    fi
+    
+    # Kill tmux session
+    if session_exists "$session"; then
+        info "Killing tmux session: $tmux_name"
+        tmux kill-session -t "$tmux_name" 2>/dev/null || true
+        success "tmux session killed"
+    else
+        info "tmux session not running"
+    fi
+    
+    echo ""
+    success "Session '$session' stopped"
+}
+
+# -----------------------------------------------------------------------------
+# Create New Session
+# -----------------------------------------------------------------------------
+
+create_new_session() {
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}              Create New Claude Session                     ${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    
+    # Get session name
+    read -p "Session name (e.g., 'myproject'): " session_name
+    session_name=$(echo "$session_name" | tr -cd 'a-zA-Z0-9_-')
+    
+    if [ -z "$session_name" ]; then
+        error "Session name required"
+    fi
+    
+    local config="$SESSIONS_DIR/$session_name.conf"
+    
+    if [ -f "$config" ]; then
+        warn "Session '$session_name' already exists!"
+        read -p "Overwrite? (y/N): " overwrite
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            exit 0
+        fi
+    fi
+    
+    echo ""
+    echo "Telegram Configuration"
+    echo "─────────────────────────"
+    
+    # Check for existing global config
+    local default_token=""
+    local default_chat=""
+    
+    if [ -f "$CLAUDE_HOME/telegram-remote.conf" ]; then
+        default_token=$(grep "TELEGRAM_BOT_TOKEN" "$CLAUDE_HOME/telegram-remote.conf" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        default_chat=$(grep "TELEGRAM_CHAT_ID" "$CLAUDE_HOME/telegram-remote.conf" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+    fi
+    
+    # Bot token
+    if [ -n "$default_token" ]; then
+        echo "Found existing bot token: ${default_token:0:10}...${default_token: -5}"
+        read -p "Use this token? (Y/n): " use_existing
+        if [[ "$use_existing" =~ ^[Nn]$ ]]; then
+            read -p "Bot Token: " bot_token
+        else
+            bot_token="$default_token"
+        fi
+    else
+        echo "Get your bot token from @BotFather on Telegram"
+        read -p "Bot Token: " bot_token
+    fi
+    
+    # Chat/Group ID
+    echo ""
+    echo "For Topics support, use a Group ID (negative number starting with -100)"
+    if [ -n "$default_chat" ]; then
+        echo "Found existing chat ID: $default_chat"
+        read -p "Use this? (Y/n): " use_existing
+        if [[ "$use_existing" =~ ^[Nn]$ ]]; then
+            read -p "Chat/Group ID: " chat_id
+        else
+            chat_id="$default_chat"
+        fi
+    else
+        read -p "Chat/Group ID: " chat_id
+    fi
+    
+    # Topic ID
+    echo ""
+    echo "Topic ID (for Forum groups with Topics enabled)"
+    echo "  - Leave empty for direct messages or non-forum groups"
+    echo "  - Get Topic ID: send a message in the topic, then check getUpdates"
+    read -p "Topic ID (optional): " topic_id
+    
+    # Create config file
+    mkdir -p "$SESSIONS_DIR"
+    
+    cat > "$config" << EOF
+# Claude Remote - Session: $session_name
+# Created: $(date)
+
+TELEGRAM_BOT_TOKEN="$bot_token"
+TELEGRAM_CHAT_ID="$chat_id"
+TELEGRAM_TOPIC_ID="$topic_id"
+TMUX_SESSION="claude-$session_name"
+EOF
+    
+    chmod 600 "$config"
+    
+    echo ""
+    success "Session config created: $config"
+    echo ""
+    
+    # Test connection
+    read -p "Send test message to Telegram? (Y/n): " test_msg
+    if [[ ! "$test_msg" =~ ^[Nn]$ ]]; then
+        local test_text="🚀 Session '$session_name' configured!"
+        
+        local curl_args=(
+            -s -X POST "https://api.telegram.org/bot$bot_token/sendMessage"
+            -d "chat_id=$chat_id"
+            --data-urlencode "text=$test_text"
+        )
+        
+        if [ -n "$topic_id" ]; then
+            curl_args+=(-d "message_thread_id=$topic_id")
+        fi
+        
+        local response=$(curl "${curl_args[@]}" 2>&1)
+        
+        if echo "$response" | grep -q '"ok":true'; then
+            success "Test message sent!"
+        else
+            warn "Test failed. Check your credentials."
+            echo "Response: $response"
+        fi
+    fi
+    
+    echo ""
+    echo "To start this session:"
+    echo "  claude-remote $session_name"
+    echo ""
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+
+main() {
+    local session="default"
+    local action="start"
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --status|-s)
+                action="status"
+                shift
+                ;;
+            --kill|-k)
+                action="kill"
+                shift
+                ;;
+            --list|-l)
+                action="list"
+                shift
+                ;;
+            --new|-n)
+                action="new"
+                shift
+                ;;
+            --help|-h)
+                echo "Usage: claude-remote [SESSION] [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --status, -s   Show session status"
+                echo "  --kill, -k     Stop session and listener"
+                echo "  --list, -l     List all sessions"
+                echo "  --new, -n      Create new session"
+                echo "  --help, -h     Show this help"
+                echo ""
+                echo "Examples:"
+                echo "  claude-remote              # Start 'default' session"
+                echo "  claude-remote myproject    # Start 'myproject' session"
+                echo "  claude-remote --list       # List all sessions"
+                exit 0
+                ;;
+            -*)
+                error "Unknown option: $1"
+                ;;
+            *)
+                session="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Execute action
+    case "$action" in
+        start)
+            start_session "$session"
+            ;;
+        status)
+            show_status "$session"
+            ;;
+        kill)
+            stop_session "$session"
+            ;;
+        list)
+            list_sessions
+            ;;
+        new)
+            create_new_session
+            ;;
+    esac
+}
+
+main "$@"
