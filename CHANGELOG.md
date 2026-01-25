@@ -11,6 +11,10 @@
 - Fix PATH setup for different shells (zsh, bash, fish) and OS (macOS, Linux)
 - Export PATH in current session so commands work immediately after setup
 
+### Changed
+- Replace "Sent" confirmation message with 👀 emoji reaction on user's message
+- On failure: react with 😱 and send error message
+
 ### Added
 - Setup script now allows creating multiple session configs in one run
 - Re-running setup detects existing install, offers to add sessions or reinstall

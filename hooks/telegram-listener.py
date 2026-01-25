@@ -193,15 +193,45 @@ def send_document(filepath, caption=""):
         'chat_id': CHAT_ID,
         'caption': caption
     }
-    
+
     if TOPIC_ID:
         data['message_thread_id'] = TOPIC_ID
-    
+
     try:
         with open(filepath, 'rb') as f:
             requests.post(url, data=data, files={'document': f}, timeout=30)
     except Exception as e:
         log(f"Error sending document: {e}", "ERROR")
+
+def set_message_reaction(message_id, emoji="👍"):
+    """Set a reaction emoji on a message.
+
+    Telegram only allows specific reaction emojis:
+    👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 🎅 🎄 ☃️ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷‍♂️ 🤷 🤷‍♀️ 😡
+
+    Pass empty string or None to remove reaction.
+    """
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setMessageReaction"
+    data = {
+        'chat_id': CHAT_ID,
+        'message_id': message_id,
+    }
+
+    if emoji:
+        data['reaction'] = [{'type': 'emoji', 'emoji': emoji}]
+    else:
+        data['reaction'] = []  # Empty array removes reaction
+
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        result = response.json()
+        if not result.get('ok'):
+            log(f"Reaction failed: {result.get('description', 'Unknown error')}", "WARN")
+            return False
+        return True
+    except Exception as e:
+        log(f"Error setting reaction: {e}", "ERROR")
+        return False
 
 # =============================================================================
 # TMUX INTERACTION
@@ -491,22 +521,27 @@ def run_listener():
                     continue
                 
                 text = message.get('text', '').strip()
+                message_id = message.get('message_id')
                 from_user = message.get('from', {}).get('username', 'unknown')
-                
+
                 if not text:
                     continue
-                
+
                 log(f"Received from @{from_user}: {text[:50]}...")
-                
+
                 # Handle commands
                 if text.startswith('/'):
                     if handle_command(text, from_user):
                         continue
-                
+
                 # Inject into tmux
                 if inject_to_tmux(text):
-                    send_message(f"✅ [{SESSION_NAME}] Sent: {text[:80]}{'...' if len(text) > 80 else ''}")
+                    # React with 👀 to acknowledge receipt (no noisy "Sent" message)
+                    # Note: Telegram only allows specific emojis as reactions
+                    set_message_reaction(message_id, "👀")
                 else:
+                    # Failure: react with 😱 and send error message
+                    set_message_reaction(message_id, "😱")
                     send_message(f"❌ [{SESSION_NAME}] Failed (session not found)")
             
             if not updates:
