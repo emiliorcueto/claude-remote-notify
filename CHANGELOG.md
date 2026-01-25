@@ -5,6 +5,8 @@
 ### Fixed
 - Fix get-topic-ids.sh JSON parse error caused by pipe/heredoc stdin conflict
 - Add webhook detection - webhooks block getUpdates, now auto-removed
+- Fix PATH setup for different shells (zsh, bash, fish) and OS (macOS, Linux)
+- Export PATH in current session so commands work immediately after setup
 
 ### Added
 - Setup script now allows creating multiple session configs in one run

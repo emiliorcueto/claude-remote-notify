@@ -352,20 +352,77 @@ SETTINGS
 # -----------------------------------------------------------------------------
 
 update_path() {
-    local shell_rc=""
-    
-    if [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
-        shell_rc="$HOME/.zshrc"
-    elif [ -f "$HOME/.bashrc" ]; then
-        shell_rc="$HOME/.bashrc"
+    local path_export='export PATH="$HOME/.local/bin:$PATH"'
+    local shell_name=$(basename "$SHELL")
+    local updated_files=()
+
+    info "Configuring PATH for $shell_name..."
+
+    case "$shell_name" in
+        zsh)
+            # zsh: add to .zshrc (interactive) and .zprofile (login shells on macOS)
+            for rc_file in "$HOME/.zshrc" "$HOME/.zprofile"; do
+                if ! grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
+                    # Ensure newline before appending
+                    [ -f "$rc_file" ] && [ -n "$(tail -c1 "$rc_file")" ] && echo "" >> "$rc_file"
+                    echo "$path_export" >> "$rc_file"
+                    updated_files+=("$rc_file")
+                fi
+            done
+            ;;
+        bash)
+            # bash: .bashrc for Linux, .bash_profile for macOS
+            if [[ "$OSTYPE" == darwin* ]]; then
+                local rc_file="$HOME/.bash_profile"
+            else
+                local rc_file="$HOME/.bashrc"
+            fi
+            if ! grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
+                [ -f "$rc_file" ] && [ -n "$(tail -c1 "$rc_file")" ] && echo "" >> "$rc_file"
+                echo "$path_export" >> "$rc_file"
+                updated_files+=("$rc_file")
+            fi
+            ;;
+        fish)
+            # fish: use fish_add_path
+            local fish_config="$HOME/.config/fish/config.fish"
+            mkdir -p "$(dirname "$fish_config")"
+            if ! grep -q '\.local/bin' "$fish_config" 2>/dev/null; then
+                [ -f "$fish_config" ] && [ -n "$(tail -c1 "$fish_config")" ] && echo "" >> "$fish_config"
+                echo 'fish_add_path $HOME/.local/bin' >> "$fish_config"
+                updated_files+=("$fish_config")
+            fi
+            ;;
+        *)
+            # Fallback: try common rc files
+            for rc_file in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+                if [ -f "$rc_file" ] && ! grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
+                    [ -n "$(tail -c1 "$rc_file")" ] && echo "" >> "$rc_file"
+                    echo "$path_export" >> "$rc_file"
+                    updated_files+=("$rc_file")
+                    break
+                fi
+            done
+            ;;
+    esac
+
+    # Report what was updated
+    if [ ${#updated_files[@]} -gt 0 ]; then
+        for f in "${updated_files[@]}"; do
+            success "Added ~/.local/bin to PATH in $f"
+        done
+    else
+        success "PATH already configured"
     fi
-    
-    if [ -n "$shell_rc" ]; then
-        if ! grep -q '\.local/bin' "$shell_rc" 2>/dev/null; then
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
-            success "Added ~/.local/bin to PATH in $shell_rc"
-            warn "Run: source $shell_rc"
-        fi
+
+    # Note: We can't modify the parent shell's PATH from a script.
+    # The export below only affects this script's process.
+    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+        export PATH="$HOME/.local/bin:$PATH"
+        echo ""
+        warn "PATH updated in shell configs, but current terminal needs refresh."
+        echo "      Run: source ~/.${shell_name}rc"
+        echo "      Or open a new terminal."
     fi
 }
 
@@ -609,10 +666,16 @@ show_completion() {
     echo "  # Add more session configs"
     echo "  ./setup-telegram-remote.sh"
     echo ""
+    echo -e "${YELLOW}Note:${NC} Commands work in this terminal. For new terminals,"
+    echo "      restart your shell or run: source ~/.$(basename "$SHELL")rc"
+    echo ""
 }
 
 main() {
     banner
+
+    # Always ensure PATH is configured (runs every time)
+    update_path
 
     # Check for --force flag
     local force=false
@@ -661,7 +724,6 @@ main() {
         check_dependencies
         install_files
         configure_hooks
-        update_path
         initial_config
         show_completion
     fi
