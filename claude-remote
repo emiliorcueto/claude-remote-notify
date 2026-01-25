@@ -281,33 +281,45 @@ start_session() {
         
         # Create a wrapper script that runs Claude and cleans up on exit
         local cleanup_script="$CLAUDE_HOME/cleanup-$session.sh"
-        cat > "$cleanup_script" << CLEANUP
+        cat > "$cleanup_script" << 'CLEANUP'
 #!/bin/bash
-# Auto-generated cleanup script for session: $session
-export CLAUDE_SESSION='$session'
-export TMUX_SESSION='$tmux_name'
+# Auto-generated cleanup script for session: SESSION_PLACEHOLDER
+export CLAUDE_SESSION='SESSION_PLACEHOLDER'
+export TMUX_SESSION='TMUX_PLACEHOLDER'
+
+cleanup() {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Cleaning up session: $CLAUDE_SESSION"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Kill listener
+    PID_FILE="$HOME/.claude/pids/listener-$CLAUDE_SESSION.pid"
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "Stopping listener (PID: $PID)..."
+            kill "$PID" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    echo "Session closed."
+    echo ""
+
+    # Kill tmux session (this will also end this script)
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+}
 
 # Run Claude
 claude
 
-# Claude exited - offer cleanup
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Claude exited. Session: $session"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "Options:"
-echo "  • Type 'claude' to restart Claude"
-echo "  • Type 'exit' to close session (stops listener too)"
-echo "  • Press Ctrl+b, d to detach (keeps running)"
-echo ""
-
-# Set trap to cleanup on shell exit
-trap 'PID_FILE="$HOME/.claude/pids/listener-$session.pid"; if [ -f "\$PID_FILE" ]; then kill \$(cat "\$PID_FILE") 2>/dev/null; rm -f "\$PID_FILE"; fi' EXIT
-
-# Keep shell alive
-exec bash
+# Claude exited - cleanup automatically
+cleanup
 CLEANUP
+        # Replace placeholders with actual values
+        sed -i '' "s/SESSION_PLACEHOLDER/$session/g" "$cleanup_script"
+        sed -i '' "s/TMUX_PLACEHOLDER/$tmux_name/g" "$cleanup_script"
         chmod +x "$cleanup_script"
         
         # Start the wrapper script in tmux

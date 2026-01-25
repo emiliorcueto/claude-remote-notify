@@ -12,6 +12,7 @@
 - Export PATH in current session so commands work immediately after setup
 
 ### Changed
+- Exiting Claude now automatically kills listener and tmux session (no manual cleanup needed)
 - Replace "Sent" confirmation message with 👀 emoji reaction on user's message
 - On failure: react with 😱 and send error message
 
