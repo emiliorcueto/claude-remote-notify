@@ -17,6 +17,8 @@
 - Bot token verification before fetching updates
 
 ### Documentation
+- Clarify claude-remote commands: default session, named sessions, --list behavior
+- Explain session name vs Topic ID relationship
 - Restructure Quick Start: separate bot creation from group setup
 - Add explicit Group Privacy disable instructions with @BotFather commands
 - Document critical requirement to remove/re-add bot after changing privacy setting

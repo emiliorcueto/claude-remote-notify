@@ -152,18 +152,24 @@ claude-remote --list
 ### Terminal Commands
 
 ```bash
-# Session Management
-claude-remote                    # Start/attach "default" session
-claude-remote myproject          # Start/attach "myproject" session
+# Start/attach sessions
+claude-remote                    # Uses ~/.claude/sessions/default.conf
+                                 # (falls back to telegram-remote.conf if no default.conf)
+claude-remote myproject          # Uses ~/.claude/sessions/myproject.conf
+                                 # (Topic ID comes from that config file)
+
+# Session management
 claude-remote myproject --kill   # Stop session and listener
-claude-remote --list             # List all sessions
-claude-remote --status           # Show all session statuses
-claude-remote --new              # Interactive: create new session
+claude-remote --list             # List sessions and exit (does NOT open Claude)
+claude-remote --status           # Show session statuses and exit
+claude-remote --new              # Create new session config (same as setup script)
 
 # Notification Toggle (global)
 claude-notify on                 # Enable notifications
 claude-notify off                # Disable notifications
 ```
+
+> **Note:** Session name ≠ Topic ID. Each session config (`~/.claude/sessions/<name>.conf`) specifies its own Topic ID. Running `claude-remote myproject` uses whatever Topic ID is configured in `myproject.conf`.
 
 ### Telegram Commands (in topic)
 
