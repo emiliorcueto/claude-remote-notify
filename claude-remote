@@ -311,8 +311,11 @@ start_session() {
         tmux new-session -d -s "$tmux_name" -e "CLAUDE_SESSION=$session" -e "TMUX_SESSION=$tmux_name"
         
         # Create a wrapper script that runs Claude and cleans up on exit
+        # Use umask subshell to ensure file is created with restricted permissions
         local cleanup_script="$CLAUDE_HOME/cleanup-$session.sh"
-        cat > "$cleanup_script" << 'CLEANUP'
+        (
+            umask 077
+            cat > "$cleanup_script" << 'CLEANUP'
 #!/bin/bash
 # Auto-generated cleanup script for session: SESSION_PLACEHOLDER
 export CLAUDE_SESSION='SESSION_PLACEHOLDER'
@@ -348,11 +351,12 @@ claude
 # Claude exited - cleanup automatically
 cleanup
 CLEANUP
+        )
         # Replace placeholders with actual values using awk (safe from injection)
         awk -v session="$session" -v tmux="$tmux_name" \
             '{gsub(/SESSION_PLACEHOLDER/, session); gsub(/TMUX_PLACEHOLDER/, tmux); print}' \
             "$cleanup_script" > "${cleanup_script}.tmp" && mv "${cleanup_script}.tmp" "$cleanup_script"
-        chmod +x "$cleanup_script"
+        chmod 700 "$cleanup_script"
         
         # Start the wrapper script in tmux
         tmux send-keys -t "$tmux_name" "bash '$cleanup_script'" Enter

@@ -612,6 +612,60 @@ test_mask_sensitive() {
 }
 
 # =============================================================================
+# TESTS: URL ENCODING
+# =============================================================================
+
+test_urlencode_shell() {
+    echo ""
+    echo "Testing: urlencode_shell"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+
+        # Basic alphanumeric (should be unchanged)
+        result=$(urlencode_shell "hello123")
+        assert_equals "hello123" "$result" "Alphanumeric unchanged"
+
+        # Space should be encoded
+        result=$(urlencode_shell "hello world")
+        assert_equals "hello%20world" "$result" "Space encoded"
+
+        # Special characters
+        result=$(urlencode_shell "a=b&c=d")
+        assert_equals "a%3Db%26c%3Dd" "$result" "Special chars encoded"
+
+        # Safe characters (should not be encoded)
+        result=$(urlencode_shell "hello-world_test.txt")
+        assert_equals "hello-world_test.txt" "$result" "Safe chars unchanged"
+
+        # Empty string
+        result=$(urlencode_shell "")
+        assert_equals "" "$result" "Empty string unchanged"
+    )
+}
+
+test_urlencode_python() {
+    echo ""
+    echo "Testing: urlencode (python)"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+
+        # Basic test
+        result=$(urlencode "hello world")
+        assert_equals "hello%20world" "$result" "Space encoded with python"
+
+        # Special characters
+        result=$(urlencode "a=b&c=d")
+        assert_equals "a%3Db%26c%3Dd" "$result" "Special chars encoded with python"
+    )
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -636,6 +690,8 @@ run_all_tests() {
     test_validate_chat_id
     test_validate_topic_id
     test_mask_sensitive
+    test_urlencode_shell
+    test_urlencode_python
 
     echo ""
     echo "=============================================="

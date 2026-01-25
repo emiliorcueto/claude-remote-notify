@@ -153,7 +153,19 @@ if [ -n "$TOPIC_ID" ]; then
     CURL_ARGS+=(-d "message_thread_id=$TOPIC_ID")
 fi
 
-# Send to Telegram
-curl "${CURL_ARGS[@]}" > /dev/null 2>&1
+# Send to Telegram with error handling
+ERROR_LOG="$CLAUDE_HOME/logs/notify-errors.log"
+mkdir -p "$(dirname "$ERROR_LOG")"
+
+RESPONSE=$(curl "${CURL_ARGS[@]}" 2>&1)
+CURL_EXIT=$?
+
+if [ $CURL_EXIT -ne 0 ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] curl exit $CURL_EXIT" >> "$ERROR_LOG"
+fi
+
+if ! echo "$RESPONSE" | grep -q '"ok":true'; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] API error: $RESPONSE" >> "$ERROR_LOG"
+fi
 
 exit 0

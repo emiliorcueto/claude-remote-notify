@@ -373,3 +373,36 @@ mask_sensitive() {
         echo "${value:0:$show_start}...${value: -$show_end}"
     fi
 }
+
+# =============================================================================
+# URL ENCODING
+# =============================================================================
+
+# URL-encode a string for safe use in URLs
+# Usage: encoded=$(urlencode "hello world")
+urlencode() {
+    local string="$1"
+    python3 -c "import urllib.parse; print(urllib.parse.quote('$string', safe=''))"
+}
+
+# URL-encode using only shell (no python dependency)
+# Usage: encoded=$(urlencode_shell "hello world")
+urlencode_shell() {
+    local string="$1"
+    local length="${#string}"
+    local encoded=""
+    local i char
+
+    for (( i = 0; i < length; i++ )); do
+        char="${string:i:1}"
+        case "$char" in
+            [a-zA-Z0-9.~_-])
+                encoded+="$char"
+                ;;
+            *)
+                encoded+=$(printf '%%%02X' "'$char")
+                ;;
+        esac
+    done
+    echo "$encoded"
+}

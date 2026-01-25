@@ -59,6 +59,21 @@ else
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
     fi
+    # Define urlencode_shell if not available from lib
+    urlencode_shell() {
+        local string="$1"
+        local length="${#string}"
+        local encoded=""
+        local i char
+        for (( i = 0; i < length; i++ )); do
+            char="${string:i:1}"
+            case "$char" in
+                [a-zA-Z0-9.~_-]) encoded+="$char" ;;
+                *) encoded+=$(printf '%%%02X' "'$char") ;;
+            esac
+        done
+        echo "$encoded"
+    }
 fi
 
 if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
@@ -118,7 +133,9 @@ if $POLL; then
     offset=0
     seen_ids=""
     while true; do
-        response=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates?limit=5&timeout=10&offset=$offset")
+        # URL-encode the offset parameter for safety
+        encoded_offset=$(urlencode_shell "$offset")
+        response=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates?limit=5&timeout=10&offset=$encoded_offset")
 
         # Check if we got any results
         if echo "$response" | grep -q '"update_id"'; then
