@@ -150,19 +150,20 @@ test_mouse_mode_enabled_in_script() {
         "Script contains mouse mode enable command"
 }
 
-test_mouse_mode_after_session_creation() {
+test_mouse_mode_after_session_block() {
     echo ""
-    echo "Testing: mouse mode command follows session creation"
+    echo "Testing: mouse mode set after session create/attach block (applies to both cases)"
 
     local script_content
     script_content=$(cat "$PROJECT_DIR/claude-remote")
 
-    # Extract lines around tmux new-session
+    # Mouse mode should be set after the fi (end of session create/attach block)
+    # and before the listener start, so it applies whether session is new or existing
     local context
-    context=$(echo "$script_content" | grep -A 5 "tmux new-session -d -s")
+    context=$(echo "$script_content" | grep -A 5 "tmux session already exists")
 
     assert_contains "$context" "mouse on" \
-        "Mouse mode enabled after session creation"
+        "Mouse mode enabled after session block (works for new and existing sessions)"
 }
 
 test_text_select_hint_present() {
@@ -485,7 +486,7 @@ run_all_tests() {
 
     # Script content tests
     test_mouse_mode_enabled_in_script
-    test_mouse_mode_after_session_creation
+    test_mouse_mode_after_session_block
     test_text_select_hint_present
     test_text_select_hint_near_detach_hint
     test_mouse_mode_comment_present
