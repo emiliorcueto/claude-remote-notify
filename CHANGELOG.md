@@ -6,6 +6,7 @@
 - Fix touchpad scroll cycling through prompt history instead of conversation history
   - Enable tmux mouse mode for claude-remote sessions
   - Add text selection hint (Option+drag on Mac) to session startup output
+  - Fix mouse mode not applied when reattaching to existing session
 
 ### Security
 - Fix command injection in telegram-listener.py - removed shell=True, use shlex for arg parsing, whitelist safe env vars
