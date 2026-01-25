@@ -7,6 +7,8 @@
 - Add webhook detection - webhooks block getUpdates, now auto-removed
 
 ### Added
+- Auto-install option for missing dependencies in setup script (brew/apt + pip)
+- Use `pip install --user` instead of `--break-system-packages` (cleaner, no system modification)
 - `--poll` mode for real-time message watching while sending test messages
 - `--debug` flag to show raw Telegram API response
 - Bot token verification before fetching updates

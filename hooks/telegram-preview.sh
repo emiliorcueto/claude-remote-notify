@@ -131,7 +131,7 @@ TOPIC_ID="${TELEGRAM_TOPIC_ID:-}"
 check_ansi2html() {
     if ! python3 -c "import ansi2html" 2>/dev/null; then
         echo "Error: ansi2html not installed"
-        echo "Install with: pip install ansi2html --break-system-packages"
+        echo "Install with: pip install --user ansi2html"
         exit 1
     fi
 }

@@ -359,7 +359,7 @@ This means Group Privacy is still enabled OR the bot needs to be re-added:
 
 ### HTML preview not showing colors
 
-1. Ensure `ansi2html` is installed: `pip install ansi2html --break-system-packages`
+1. Ensure `ansi2html` is installed: `pip install ansi2html --user`
 2. Tap the HTML file to open (don't just preview)
 
 ### Listener starts but immediately stops
@@ -438,8 +438,8 @@ After disabling, the bot must be **removed and re-added** to the group for the c
 ## Requirements
 
 - **Python 3** with:
-  - `requests` (`pip install requests --break-system-packages`)
-  - `ansi2html` (`pip install ansi2html --break-system-packages`)
+  - `requests` (`pip install requests --user`)
+  - `ansi2html` (`pip install ansi2html --user`)
 - **tmux** for session management
 - **curl** for API calls
 - **Claude Code** CLI

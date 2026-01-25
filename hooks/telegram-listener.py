@@ -49,7 +49,7 @@ try:
     import requests
 except ImportError:
     print("ERROR: 'requests' module not found")
-    print("Install with: pip install requests --break-system-packages")
+    print("Install with: pip install --user requests")
     sys.exit(1)
 
 # =============================================================================

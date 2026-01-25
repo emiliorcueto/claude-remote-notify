@@ -39,56 +39,96 @@ error()   { echo -e "${RED}✗${NC} $1"; exit 1; }
 
 check_dependencies() {
     info "Checking dependencies..."
-    
-    local missing=()
-    
-    command -v curl &> /dev/null || missing+=("curl")
-    command -v tmux &> /dev/null || missing+=("tmux")
-    command -v python3 &> /dev/null || missing+=("python3")
-    
+
+    local missing_sys=()
+    local missing_pip=()
+
+    command -v curl &> /dev/null || missing_sys+=("curl")
+    command -v tmux &> /dev/null || missing_sys+=("tmux")
+    command -v python3 &> /dev/null || missing_sys+=("python3")
+
     # Check Python modules
     if command -v python3 &> /dev/null; then
         if ! python3 -c "import requests" 2>/dev/null; then
-            missing+=("python3-requests")
+            missing_pip+=("requests")
         fi
         if ! python3 -c "import ansi2html" 2>/dev/null; then
-            missing+=("python3-ansi2html")
+            missing_pip+=("ansi2html")
         fi
     fi
-    
-    if [ ${#missing[@]} -gt 0 ]; then
-        warn "Missing dependencies: ${missing[*]}"
+
+    local all_missing=("${missing_sys[@]}" "${missing_pip[@]}")
+
+    if [ ${#all_missing[@]} -gt 0 ]; then
+        warn "Missing dependencies:"
+        [ ${#missing_sys[@]} -gt 0 ] && echo "  System: ${missing_sys[*]}"
+        [ ${#missing_pip[@]} -gt 0 ] && echo "  Python: ${missing_pip[*]}"
         echo ""
-        
-        if [[ " ${missing[*]} " =~ "python3-requests" ]] || [[ " ${missing[*]} " =~ "python3-ansi2html" ]]; then
-            echo "Install Python modules with:"
-            if [[ " ${missing[*]} " =~ "python3-requests" ]]; then
-                echo "  pip install requests --break-system-packages"
+
+        read -p "Install automatically? (Y/n): " auto_install
+
+        if [[ ! "$auto_install" =~ ^[Nn]$ ]]; then
+            # Install system packages
+            if [ ${#missing_sys[@]} -gt 0 ]; then
+                info "Installing system packages..."
+                if command -v brew &> /dev/null; then
+                    brew install "${missing_sys[@]}" && success "System packages installed" || warn "Some packages failed"
+                elif command -v apt &> /dev/null; then
+                    sudo apt update && sudo apt install -y "${missing_sys[@]}" && success "System packages installed" || warn "Some packages failed"
+                else
+                    warn "No package manager found (brew/apt). Install manually: ${missing_sys[*]}"
+                fi
             fi
-            if [[ " ${missing[*]} " =~ "python3-ansi2html" ]]; then
-                echo "  pip install ansi2html --break-system-packages"
+
+            # Install Python packages (--user installs to ~/.local, no system modification)
+            if [ ${#missing_pip[@]} -gt 0 ]; then
+                info "Installing Python packages to ~/.local..."
+                if python3 -m pip install --user "${missing_pip[@]}" 2>/dev/null; then
+                    success "Python packages installed"
+                elif pip3 install --user "${missing_pip[@]}" 2>/dev/null; then
+                    success "Python packages installed"
+                else
+                    warn "Could not install Python packages. Try manually:"
+                    echo "  pip install --user ${missing_pip[*]}"
+                fi
             fi
+
+            # Re-verify
             echo ""
-        fi
-        
-        local pkg_missing=()
-        for dep in "${missing[@]}"; do
-            [[ "$dep" != "python3-requests" && "$dep" != "python3-ansi2html" ]] && pkg_missing+=("$dep")
-        done
-        
-        if [ ${#pkg_missing[@]} -gt 0 ]; then
-            echo "Install system packages with:"
-            if command -v apt &> /dev/null; then
-                echo "  sudo apt install ${pkg_missing[*]}"
-            elif command -v brew &> /dev/null; then
-                echo "  brew install ${pkg_missing[*]}"
+            info "Verifying installation..."
+            local still_missing=()
+            command -v curl &> /dev/null || still_missing+=("curl")
+            command -v tmux &> /dev/null || still_missing+=("tmux")
+            command -v python3 &> /dev/null || still_missing+=("python3")
+            python3 -c "import requests" 2>/dev/null || still_missing+=("requests")
+            python3 -c "import ansi2html" 2>/dev/null || still_missing+=("ansi2html")
+
+            if [ ${#still_missing[@]} -gt 0 ]; then
+                warn "Still missing: ${still_missing[*]}"
+                read -p "Continue anyway? (y/N): " cont
+                [[ ! "$cont" =~ ^[Yy]$ ]] && exit 1
+            else
+                success "All dependencies installed"
             fi
-        fi
-        
-        echo ""
-        read -p "Continue anyway? (y/N): " cont
-        if [[ ! "$cont" =~ ^[Yy]$ ]]; then
-            exit 1
+        else
+            # Manual install instructions
+            echo ""
+            if [ ${#missing_pip[@]} -gt 0 ]; then
+                echo "Install Python packages:"
+                echo "  pip install --user ${missing_pip[*]}"
+                echo ""
+            fi
+            if [ ${#missing_sys[@]} -gt 0 ]; then
+                echo "Install system packages:"
+                if command -v brew &> /dev/null; then
+                    echo "  brew install ${missing_sys[*]}"
+                elif command -v apt &> /dev/null; then
+                    echo "  sudo apt install ${missing_sys[*]}"
+                fi
+                echo ""
+            fi
+            read -p "Continue anyway? (y/N): " cont
+            [[ ! "$cont" =~ ^[Yy]$ ]] && exit 1
         fi
     else
         success "All dependencies installed"
