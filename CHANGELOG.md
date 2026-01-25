@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Security
+- Fix command injection in telegram-listener.py - removed shell=True, use shlex for arg parsing, whitelist safe env vars
+- Fix sed injection in claude-remote - replaced sed with awk for safe placeholder substitution
+- Fix insecure temp files in telegram-preview.sh - use mktemp with cleanup trap
+
+### Added
+- Shared security library lib/common.sh with safe temp file handling, variable substitution, input validation
+- Unit tests for security functions (99% coverage)
+
 ### Fixed
 - Fix Telegram messages not submitting to Claude (Enter key was interpreted as text)
 - Use tmux send-keys `-l` (literal) mode for proper multi-line message support

@@ -42,6 +42,7 @@ import subprocess
 import signal
 import argparse
 import re
+import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -95,6 +96,47 @@ TMUX_SESSION = os.environ.get('TMUX_SESSION', config.get('TMUX_SESSION', f'claud
 POLL_TIMEOUT = 30
 LOG_FILE = CLAUDE_HOME / 'logs' / f'listener-{SESSION_NAME}.log'
 PID_FILE = CLAUDE_HOME / 'pids' / f'listener-{SESSION_NAME}.pid'
+
+# Whitelisted environment variables for subprocess execution
+SAFE_ENV_VARS = {'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TERM', 'TMPDIR', 'LC_ALL', 'LC_CTYPE'}
+
+
+def get_safe_env():
+    """Return environment dict with only safe variables plus session-specific ones."""
+    env = {k: v for k, v in os.environ.items() if k in SAFE_ENV_VARS}
+    env['CLAUDE_SESSION'] = SESSION_NAME
+    env['TMUX_SESSION'] = TMUX_SESSION
+    env['CLAUDE_HOME'] = str(CLAUDE_HOME)
+    return env
+
+
+def validate_script_path(script_path):
+    """Validate script path is within CLAUDE_HOME and has safe permissions."""
+    path = Path(script_path).resolve()
+    claude_home_resolved = CLAUDE_HOME.resolve()
+
+    # Script must be within CLAUDE_HOME
+    if not str(path).startswith(str(claude_home_resolved)):
+        raise ValueError(f"Script path {path} is outside CLAUDE_HOME")
+
+    # Script must exist
+    if not path.exists():
+        raise ValueError(f"Script not found: {path}")
+
+    # Script must be a file (not symlink to outside)
+    if not path.is_file():
+        raise ValueError(f"Not a file: {path}")
+
+    # Check script is owned by current user or root
+    stat_info = path.stat()
+    if stat_info.st_uid not in (os.getuid(), 0):
+        raise ValueError(f"Script not owned by current user or root: {path}")
+
+    # Script must not be world-writable
+    if stat_info.st_mode & 0o002:
+        raise ValueError(f"Script is world-writable: {path}")
+
+    return path
 
 # =============================================================================
 # LOGGING
@@ -324,26 +366,38 @@ def should_process_message(message):
 # =============================================================================
 
 def run_script(script_path, args=""):
-    """Run a hook script and return output"""
+    """Run a hook script securely and return output.
+
+    Security measures:
+    - No shell=True (prevents command injection)
+    - Script path validation (must be within CLAUDE_HOME)
+    - Safe environment variables only
+    - Args parsed with shlex to prevent injection
+    """
     try:
-        cmd = f"{script_path} {args}".strip()
+        # Validate script path
+        validated_path = validate_script_path(script_path)
+
+        # Build command list (no shell=True)
+        cmd = [str(validated_path)]
+        if args:
+            # Use shlex.split to safely parse arguments
+            cmd.extend(shlex.split(args))
+
         result = subprocess.run(
             cmd,
-            shell=True,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=60,
-            env={
-                **os.environ,
-                'CLAUDE_SESSION': SESSION_NAME,
-                'TMUX_SESSION': TMUX_SESSION,
-                'CLAUDE_HOME': str(CLAUDE_HOME)
-            }
+            env=get_safe_env()
         )
         output = result.stdout + result.stderr
         return output.strip() if output.strip() else "(no output)"
     except subprocess.TimeoutExpired:
         return "Error: Script timed out after 60 seconds"
+    except ValueError as e:
+        return f"Error: {e}"
     except Exception as e:
         return f"Error running script: {e}"
 

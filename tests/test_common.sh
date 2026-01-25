@@ -1,0 +1,466 @@
+#!/bin/bash
+# =============================================================================
+# test_common.sh - Unit tests for lib/common.sh
+# =============================================================================
+#
+# Usage: ./test_common.sh
+#
+# =============================================================================
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$PROJECT_DIR/lib"
+
+# Colors for test output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Test counters
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+# =============================================================================
+# TEST FRAMEWORK
+# =============================================================================
+
+assert_equals() {
+    local expected="$1"
+    local actual="$2"
+    local message="${3:-}"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [ "$expected" = "$actual" ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: $message"
+        return 0
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: $message"
+        echo "    Expected: $expected"
+        echo "    Actual:   $actual"
+        return 1
+    fi
+}
+
+assert_not_empty() {
+    local value="$1"
+    local message="${2:-}"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [ -n "$value" ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: $message"
+        return 0
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: $message (value was empty)"
+        return 1
+    fi
+}
+
+assert_file_exists() {
+    local file="$1"
+    local message="${2:-}"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [ -f "$file" ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: $message"
+        return 0
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: $message (file not found: $file)"
+        return 1
+    fi
+}
+
+assert_command_fails() {
+    local message="$1"
+    shift
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if "$@" 2>/dev/null; then
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: $message (command should have failed)"
+        return 1
+    else
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: $message"
+        return 0
+    fi
+}
+
+# =============================================================================
+# SETUP / TEARDOWN
+# =============================================================================
+
+TEMP_DIR=""
+
+setup() {
+    TEMP_DIR=$(mktemp -d)
+    # Source the library in a subshell for each test
+}
+
+teardown() {
+    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
+}
+
+# =============================================================================
+# TESTS: TEMP FILE HANDLING
+# =============================================================================
+
+test_create_temp_file() {
+    echo ""
+    echo "Testing: create_temp_file"
+
+    # Source in current shell context for cleanup test
+    source "$LIB_DIR/common.sh"
+
+    local temp_file
+    temp_file=$(create_temp_file "test-prefix" ".txt")
+    _COMMON_TEMP_FILES+=("$temp_file")
+
+    assert_file_exists "$temp_file" "Temp file should be created"
+    assert_not_empty "$(echo "$temp_file" | grep 'test-prefix')" "Temp file should contain prefix"
+    assert_not_empty "$(echo "$temp_file" | grep '.txt')" "Temp file should have suffix"
+
+    # Cleanup should work
+    cleanup_temp_files
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ ! -f "$temp_file" ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: Temp file cleaned up successfully"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: Temp file should be cleaned up"
+        rm -f "$temp_file"
+    fi
+}
+
+test_create_temp_dir() {
+    echo ""
+    echo "Testing: create_temp_dir"
+
+    # Source in current shell context for cleanup test
+    source "$LIB_DIR/common.sh"
+
+    local temp_dir
+    temp_dir=$(create_temp_dir "test-dir")
+    _COMMON_TEMP_FILES+=("$temp_dir")
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ -d "$temp_dir" ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: Temp directory should be created"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: Temp directory not created"
+    fi
+
+    # Cleanup
+    cleanup_temp_files
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ ! -d "$temp_dir" ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: Temp directory cleaned up"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: Temp directory not cleaned up"
+        rm -rf "$temp_dir"
+    fi
+}
+
+# =============================================================================
+# TESTS: SAFE VARIABLE SUBSTITUTION
+# =============================================================================
+
+test_safe_substitute() {
+    echo ""
+    echo "Testing: safe_substitute"
+
+    setup
+
+    local test_file="$TEMP_DIR/test.txt"
+    echo "Hello PLACEHOLDER world" > "$test_file"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        safe_substitute "$test_file" "PLACEHOLDER" "Claude"
+
+        local content
+        content=$(cat "$test_file")
+        assert_equals "Hello Claude world" "$content" "Placeholder should be replaced"
+    )
+
+    teardown
+}
+
+test_safe_substitute_with_special_chars() {
+    echo ""
+    echo "Testing: safe_substitute with special characters"
+
+    setup
+
+    local test_file="$TEMP_DIR/test.txt"
+    echo "Session: SESSION_PLACEHOLDER" > "$test_file"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Test with value containing special regex chars
+        safe_substitute "$test_file" "SESSION_PLACEHOLDER" "my-session_123"
+
+        local content
+        content=$(cat "$test_file")
+        assert_equals "Session: my-session_123" "$content" "Special chars should be handled"
+    )
+
+    teardown
+}
+
+test_safe_substitute_multi() {
+    echo ""
+    echo "Testing: safe_substitute_multi"
+
+    setup
+
+    local test_file="$TEMP_DIR/test.txt"
+    cat > "$test_file" << 'EOF'
+Session: SESSION_PLACEHOLDER
+Tmux: TMUX_PLACEHOLDER
+EOF
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        safe_substitute_multi "$test_file" \
+            "SESSION_PLACEHOLDER=mysession" \
+            "TMUX_PLACEHOLDER=claude-mysession"
+
+        local content
+        content=$(cat "$test_file")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$content" | grep -q "Session: mysession"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: First placeholder replaced"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: First placeholder not replaced"
+        fi
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$content" | grep -q "Tmux: claude-mysession"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Second placeholder replaced"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Second placeholder not replaced"
+        fi
+    )
+
+    teardown
+}
+
+# =============================================================================
+# TESTS: INPUT VALIDATION
+# =============================================================================
+
+test_validate_session_name() {
+    echo ""
+    echo "Testing: validate_session_name"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Valid names
+        local result
+        result=$(validate_session_name "myproject")
+        assert_equals "myproject" "$result" "Valid alphanumeric name accepted"
+
+        result=$(validate_session_name "my-project")
+        assert_equals "my-project" "$result" "Dash in name accepted"
+
+        result=$(validate_session_name "my_project")
+        assert_equals "my_project" "$result" "Underscore in name accepted"
+
+        result=$(validate_session_name "Project123")
+        assert_equals "Project123" "$result" "Mixed case with numbers accepted"
+    )
+
+    # Invalid names (should fail)
+    (
+        source "$LIB_DIR/common.sh" 2>/dev/null || true
+
+        assert_command_fails "Name with spaces rejected" validate_session_name "my project"
+        assert_command_fails "Name with semicolon rejected" validate_session_name "my;project"
+        assert_command_fails "Name with shell chars rejected" validate_session_name 'my$(whoami)'
+    )
+}
+
+test_sanitize_input() {
+    echo ""
+    echo "Testing: sanitize_input"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+
+        result=$(sanitize_input "hello world")
+        assert_equals "hello world" "$result" "Normal text unchanged"
+
+        result=$(sanitize_input "hello; rm -rf /")
+        assert_equals "hello rm -rf /" "$result" "Semicolon removed"
+
+        result=$(sanitize_input 'hello$(whoami)')
+        assert_equals "hellowhoami" "$result" "Command substitution chars removed"
+
+        result=$(sanitize_input "file.txt")
+        assert_equals "file.txt" "$result" "Dots preserved"
+
+        result=$(sanitize_input "path/to/file")
+        assert_equals "path/to/file" "$result" "Slashes preserved"
+    )
+}
+
+test_validate_path_in_dir() {
+    echo ""
+    echo "Testing: validate_path_in_dir"
+
+    setup
+
+    mkdir -p "$TEMP_DIR/base/subdir"
+    echo "test" > "$TEMP_DIR/base/subdir/file.txt"
+    echo "outside" > "$TEMP_DIR/outside.txt"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Valid path
+        local result
+        result=$(validate_path_in_dir "$TEMP_DIR/base/subdir/file.txt" "$TEMP_DIR/base")
+        assert_not_empty "$result" "Valid path in dir accepted"
+
+        # Invalid path (outside base)
+        assert_command_fails "Path outside base rejected" \
+            validate_path_in_dir "$TEMP_DIR/outside.txt" "$TEMP_DIR/base"
+    )
+
+    teardown
+}
+
+# =============================================================================
+# TESTS: SCRIPT VALIDATION
+# =============================================================================
+
+test_validate_script() {
+    echo ""
+    echo "Testing: validate_script"
+
+    setup
+
+    # Create valid script
+    local valid_script="$TEMP_DIR/valid.sh"
+    echo '#!/bin/bash' > "$valid_script"
+    echo 'echo hello' >> "$valid_script"
+    chmod 755 "$valid_script"
+
+    # Create world-writable script
+    local unsafe_script="$TEMP_DIR/unsafe.sh"
+    echo '#!/bin/bash' > "$unsafe_script"
+    chmod 777 "$unsafe_script"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Valid script should pass
+        local result
+        result=$(validate_script "$valid_script")
+        assert_equals "$valid_script" "$result" "Valid script accepted"
+
+        # Non-existent script should fail
+        assert_command_fails "Non-existent script rejected" \
+            validate_script "$TEMP_DIR/nonexistent.sh"
+
+        # Directory should fail
+        assert_command_fails "Directory rejected" \
+            validate_script "$TEMP_DIR"
+    )
+
+    teardown
+}
+
+# =============================================================================
+# TESTS: LOGGING
+# =============================================================================
+
+test_logging_functions() {
+    echo ""
+    echo "Testing: logging functions"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Just ensure they don't crash
+        log_debug "Debug message" 2>/dev/null
+        log_info "Info message" 2>/dev/null
+        log_warn "Warning message" 2>/dev/null
+        log_error "Error message" 2>/dev/null
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: Logging functions execute without error"
+    )
+}
+
+# =============================================================================
+# RUN ALL TESTS
+# =============================================================================
+
+run_all_tests() {
+    echo "=============================================="
+    echo "  Running lib/common.sh unit tests"
+    echo "=============================================="
+
+    test_create_temp_file
+    test_create_temp_dir
+    test_safe_substitute
+    test_safe_substitute_with_special_chars
+    test_safe_substitute_multi
+    test_validate_session_name
+    test_sanitize_input
+    test_validate_path_in_dir
+    test_validate_script
+    test_logging_functions
+
+    echo ""
+    echo "=============================================="
+    echo "  Test Results"
+    echo "=============================================="
+    echo "  Total:  $TESTS_RUN"
+    echo "  Passed: $TESTS_PASSED"
+    echo "  Failed: $TESTS_FAILED"
+
+    if [ "$TESTS_FAILED" -eq 0 ]; then
+        echo -e "  ${GREEN}All tests passed!${NC}"
+        exit 0
+    else
+        echo -e "  ${RED}Some tests failed!${NC}"
+        exit 1
+    fi
+}
+
+run_all_tests

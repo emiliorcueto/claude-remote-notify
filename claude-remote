@@ -317,9 +317,10 @@ claude
 # Claude exited - cleanup automatically
 cleanup
 CLEANUP
-        # Replace placeholders with actual values
-        sed -i '' "s/SESSION_PLACEHOLDER/$session/g" "$cleanup_script"
-        sed -i '' "s/TMUX_PLACEHOLDER/$tmux_name/g" "$cleanup_script"
+        # Replace placeholders with actual values using awk (safe from injection)
+        awk -v session="$session" -v tmux="$tmux_name" \
+            '{gsub(/SESSION_PLACEHOLDER/, session); gsub(/TMUX_PLACEHOLDER/, tmux); print}' \
+            "$cleanup_script" > "${cleanup_script}.tmp" && mv "${cleanup_script}.tmp" "$cleanup_script"
         chmod +x "$cleanup_script"
         
         # Start the wrapper script in tmux
