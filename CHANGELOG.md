@@ -7,6 +7,9 @@
 - Add webhook detection - webhooks block getUpdates, now auto-removed
 
 ### Added
+- Setup script now allows creating multiple session configs in one run
+- Re-running setup detects existing install, offers to add sessions or reinstall
+- `--force` flag to force full reinstall
 - Auto-install option for missing dependencies in setup script (brew/apt + pip)
 - Use `pip install --user` instead of `--break-system-packages` (cleaner, no system modification)
 - `--poll` mode for real-time message watching while sending test messages

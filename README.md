@@ -72,18 +72,28 @@ Control multiple Claude CLI sessions remotely via Telegram, with each session is
 #   → Topic ID: 456  (for "project-beta" topic)
 ```
 
-### 4. Install
+### 4. Install & Configure Sessions
 
 ```bash
+# First run: installs files, configures bot, creates session configs
 ./setup-telegram-remote.sh
+
+# Setup prompts to create multiple session configs (one per topic)
+# Answer 'y' to "Create a session config?" for each session you need
 ```
 
-### 5. Create Session Configs
+**Re-running setup:**
+```bash
+# If already installed, offers to add more sessions
+./setup-telegram-remote.sh
+
+# Force full reinstall
+./setup-telegram-remote.sh --force
+```
+
+### 5. Manual Session Config (Alternative)
 
 ```bash
-# Interactive setup:
-claude-remote --new
-
 # Or manually create ~/.claude/sessions/myproject.conf:
 TELEGRAM_BOT_TOKEN="123456:ABC..."
 TELEGRAM_CHAT_ID="-1001234567890"

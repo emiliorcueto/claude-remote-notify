@@ -451,59 +451,139 @@ EOF
     echo "If you're using a Forum group with Topics,"
     echo "you can create per-session configs now."
     echo ""
-    read -p "Create a session config? (y/N): " create_session
-    
-    if [[ "$create_session" =~ ^[Yy]$ ]]; then
-        echo ""
-        read -p "Session name: " session_name
-        session_name=$(echo "$session_name" | tr -cd 'a-zA-Z0-9_-')
-        
-        echo ""
-        echo "Get Topic ID by sending a message in the topic,"
-        echo "then running: get-topic-ids.sh"
-        echo "(Leave empty to configure later)"
-        read -p "Topic ID: " topic_id
-        
-        mkdir -p "$CLAUDE_HOME/sessions"
-        cat > "$CLAUDE_HOME/sessions/$session_name.conf" << EOF
+
+    create_sessions "$bot_token" "$chat_id"
+}
+
+# -----------------------------------------------------------------------------
+# Create Session Config
+# -----------------------------------------------------------------------------
+
+create_single_session() {
+    local bot_token="$1"
+    local chat_id="$2"
+
+    echo ""
+    read -p "Session name: " session_name
+    session_name=$(echo "$session_name" | tr -cd 'a-zA-Z0-9_-')
+
+    if [ -z "$session_name" ]; then
+        warn "Session name cannot be empty"
+        return 1
+    fi
+
+    if [ -f "$CLAUDE_HOME/sessions/$session_name.conf" ]; then
+        warn "Session '$session_name' already exists"
+        read -p "Overwrite? (y/N): " overwrite
+        [[ ! "$overwrite" =~ ^[Yy]$ ]] && return 1
+    fi
+
+    echo ""
+    echo "Get Topic ID by sending a message in the topic,"
+    echo "then running: get-topic-ids.sh --poll"
+    echo "(Leave empty to configure later)"
+    read -p "Topic ID: " topic_id
+
+    mkdir -p "$CLAUDE_HOME/sessions"
+    cat > "$CLAUDE_HOME/sessions/$session_name.conf" << EOF
 # Claude Remote - Session: $session_name
 TELEGRAM_BOT_TOKEN="$bot_token"
 TELEGRAM_CHAT_ID="$chat_id"
 TELEGRAM_TOPIC_ID="$topic_id"
 TMUX_SESSION="claude-$session_name"
 EOF
-        
-        chmod 600 "$CLAUDE_HOME/sessions/$session_name.conf"
-        success "Session '$session_name' configured"
-        
-        if [ -n "$topic_id" ]; then
-            # Test with topic
-            local response=$(curl -s -X POST "https://api.telegram.org/bot$bot_token/sendMessage" \
-                -d "chat_id=$chat_id" \
-                -d "message_thread_id=$topic_id" \
-                --data-urlencode "text=🚀 [$session_name] Session configured!" \
-                2>&1)
-            
-            if echo "$response" | grep -q '"ok":true'; then
-                success "Test message sent to topic!"
-            fi
+
+    chmod 600 "$CLAUDE_HOME/sessions/$session_name.conf"
+    success "Session '$session_name' configured"
+
+    if [ -n "$topic_id" ]; then
+        # Test with topic
+        local response=$(curl -s -X POST "https://api.telegram.org/bot$bot_token/sendMessage" \
+            -d "chat_id=$chat_id" \
+            -d "message_thread_id=$topic_id" \
+            --data-urlencode "text=🚀 [$session_name] Session configured!" \
+            2>&1)
+
+        if echo "$response" | grep -q '"ok":true'; then
+            success "Test message sent to topic!"
         fi
     fi
+
+    return 0
+}
+
+create_sessions() {
+    local bot_token="$1"
+    local chat_id="$2"
+
+    while true; do
+        read -p "Create a session config? (y/N): " create_session
+
+        if [[ "$create_session" =~ ^[Yy]$ ]]; then
+            create_single_session "$bot_token" "$chat_id"
+            echo ""
+        else
+            break
+        fi
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Add Sessions (for existing installations)
+# -----------------------------------------------------------------------------
+
+add_sessions() {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Add Session Configs"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Load existing config
+    if [ -f "$CLAUDE_HOME/telegram-remote.conf" ]; then
+        source "$CLAUDE_HOME/telegram-remote.conf"
+    fi
+
+    if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+        warn "Global config not found or incomplete"
+        echo "Run full setup first: ./setup-telegram-remote.sh --force"
+        exit 1
+    fi
+
+    # Show existing sessions
+    echo ""
+    if [ -d "$CLAUDE_HOME/sessions" ] && [ "$(ls -A "$CLAUDE_HOME/sessions" 2>/dev/null)" ]; then
+        info "Existing sessions:"
+        for conf in "$CLAUDE_HOME/sessions"/*.conf; do
+            [ -f "$conf" ] && echo "  - $(basename "$conf" .conf)"
+        done
+        echo ""
+    fi
+
+    create_sessions "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID"
+
+    echo ""
+    success "Done!"
+}
+
+# -----------------------------------------------------------------------------
+# Check Existing Setup
+# -----------------------------------------------------------------------------
+
+check_existing_setup() {
+    # Check if already set up
+    if [ -f "$CLAUDE_HOME/telegram-remote.conf" ] && \
+       [ -f "$CLAUDE_HOME/hooks/telegram-notify.sh" ] && \
+       [ -f "$HOME/.local/bin/claude-remote" ]; then
+        return 0  # Already set up
+    fi
+    return 1  # Not set up
 }
 
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
-main() {
-    banner
-    
-    check_dependencies
-    install_files
-    configure_hooks
-    update_path
-    initial_config
-    
+show_completion() {
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}                    Installation Complete!                  ${NC}"
@@ -526,6 +606,65 @@ main() {
     echo "  # Get topic IDs from your group"
     echo "  get-topic-ids.sh"
     echo ""
+    echo "  # Add more session configs"
+    echo "  ./setup-telegram-remote.sh"
+    echo ""
+}
+
+main() {
+    banner
+
+    # Check for --force flag
+    local force=false
+    [[ "$1" == "--force" || "$1" == "-f" ]] && force=true
+
+    # Check if already set up
+    if ! $force && check_existing_setup; then
+        success "Claude Remote is already installed"
+        echo ""
+
+        # Show existing sessions
+        if [ -d "$CLAUDE_HOME/sessions" ] && [ "$(ls -A "$CLAUDE_HOME/sessions" 2>/dev/null)" ]; then
+            info "Existing sessions:"
+            for conf in "$CLAUDE_HOME/sessions"/*.conf; do
+                [ -f "$conf" ] && echo "  - $(basename "$conf" .conf)"
+            done
+        else
+            info "No session configs yet"
+        fi
+
+        echo ""
+        echo "Options:"
+        echo "  1) Add session configs"
+        echo "  2) Re-run full setup (--force)"
+        echo "  3) Exit"
+        echo ""
+        read -p "Choose [1-3]: " choice
+
+        case "$choice" in
+            1)
+                add_sessions
+                ;;
+            2)
+                force=true
+                ;;
+            3)
+                exit 0
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+    fi
+
+    if $force || ! check_existing_setup; then
+        check_dependencies
+        install_files
+        configure_hooks
+        update_path
+        initial_config
+        show_completion
+    fi
 }
 
 main "$@"
