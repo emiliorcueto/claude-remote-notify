@@ -114,6 +114,10 @@ claude-remote project-beta
 claude-remote --list
 ```
 
+**Session startup hints:**
+- Detach: `Ctrl+b, d` (keeps session running in background)
+- Text select: `Option+drag` on Mac (mouse mode enabled for touchpad scrolling)
+
 ## Architecture
 
 ```
@@ -231,6 +235,8 @@ claude-notify off                # Disable notifications
 ├── logs/                         # Listener logs
 │   ├── listener-project-alpha.log
 │   └── listener-project-beta.log
+├── lib/
+│   └── common.sh                 # Shared security library (validation, sanitization)
 ├── hooks/
 │   ├── telegram-notify.sh        # Send notifications (called by Claude hooks)
 │   ├── telegram-listener.py      # Receive messages (runs in background)
@@ -406,6 +412,8 @@ This means Group Privacy is still enabled OR the bot needs to be re-added:
 | Notifications disabled | Listener still runs (can receive messages, just no outbound alerts) |
 | Chat ID empty during setup | Setup continues but test message will fail |
 | Invalid bot token | Listener starts but fails to connect; check logs |
+| Touchpad scroll in tmux | Scrolls through scrollback buffer (mouse mode enabled) |
+| Text selection in tmux | Use Option+drag on Mac (mouse mode intercepts normal drag) |
 
 ## Bot Privacy Mode (CRITICAL!)
 
@@ -462,10 +470,32 @@ After disabling, the bot must be **removed and re-added** to the group for the c
 
 ## Security
 
-- Bot token stored with 600 permissions
+### Data Protection
+- Bot token stored with 600 permissions (owner read/write only)
+- Config files validated for ownership and permissions before loading
+- World-writable configs rejected (prevents privilege escalation)
+- Sensitive data (tokens, chat IDs) masked in logs
+
+### Input Validation
+- Telegram credentials validated (bot token, chat ID, topic ID formats)
+- Session names sanitized to alphanumeric, underscore, hyphen only
+- Path traversal attacks prevented (scripts validated to be within CLAUDE_HOME)
+
+### Command Injection Prevention
+- No `shell=True` in subprocess calls
+- Arguments parsed with `shlex.split()` for safe tokenization
+- tmux input sanitized (ANSI escapes, control characters filtered)
+- Variable substitution uses `awk` instead of `sed` (prevents injection)
+
+### Session Isolation
 - Each listener only processes messages from its configured topic
 - Messages from unauthorized chats/topics are ignored
+- Safe environment variable whitelist (dangerous vars like LD_PRELOAD excluded)
+
+### Local Processing
 - All communication stays local (no cloud servers)
+- Listener runs on your machine, not Telegram's servers
+- Bot token never leaves your system except for Telegram API calls
 
 ## License
 
