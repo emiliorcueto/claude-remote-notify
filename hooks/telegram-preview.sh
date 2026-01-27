@@ -173,8 +173,9 @@ convert_to_html() {
     local title="$1"
     local session="$2"
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    
-    python3 << PYTHON_SCRIPT - "$title" "$session" "$timestamp"
+
+    # Use python3 -c to keep stdin available for piped content
+    python3 -c '
 import sys
 from ansi2html import Ansi2HTMLConverter
 
@@ -184,10 +185,10 @@ timestamp = sys.argv[3] if len(sys.argv) > 3 else ""
 
 ansi_input = sys.stdin.read()
 
-conv = Ansi2HTMLConverter(inline=True, dark_bg=True, scheme='dracula')
+conv = Ansi2HTMLConverter(inline=True, dark_bg=True, scheme="dracula")
 html_body = conv.convert(ansi_input, full=False)
 
-html_doc = f'''<!DOCTYPE html>
+html_doc = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -197,7 +198,7 @@ html_doc = f'''<!DOCTYPE html>
         body {{
             background-color: #1e1e1e;
             color: #d4d4d4;
-            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+            font-family: Menlo, Monaco, Courier New, monospace;
             font-size: 13px;
             line-height: 1.4;
             padding: 12px;
@@ -234,10 +235,10 @@ html_doc = f'''<!DOCTYPE html>
     </div>
 {html_body}
 </body>
-</html>'''
+</html>"""
 
 print(html_doc)
-PYTHON_SCRIPT
+' "$title" "$session" "$timestamp"
 }
 
 send_html_document() {
