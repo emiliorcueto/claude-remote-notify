@@ -94,7 +94,7 @@ TOPIC_ID="${TELEGRAM_TOPIC_ID:-}"
 
 get_terminal_context() {
     local session="${1:-$TMUX_SESSION}"
-    
+
     if command -v tmux &> /dev/null && tmux has-session -t "$session" 2>/dev/null; then
         local context
         context=$(tmux capture-pane -t "$session" -p -S -"$CONTEXT_LINES" 2>/dev/null)
@@ -108,7 +108,15 @@ get_terminal_context() {
 # Send notification
 # -----------------------------------------------------------------------------
 
-CONTEXT=$(get_terminal_context "$TMUX_SESSION")
+RAW_CONTEXT=$(get_terminal_context "$TMUX_SESSION")
+
+# Format context for Telegram readability (strip ANSI, convert tables to bullets)
+if type format_for_telegram &>/dev/null; then
+    CONTEXT=$(format_for_telegram "$RAW_CONTEXT")
+else
+    # Fallback: basic ANSI stripping if lib not loaded
+    CONTEXT=$(echo "$RAW_CONTEXT" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
+fi
 
 # Determine emoji and header based on event type
 case "$EVENT_TYPE" in
@@ -132,12 +140,9 @@ esac
 
 # Build the message with session identifier
 MESSAGE="$EMOJI [$SESSION_NAME] $HEADER
-
 ⏰ $(date '+%H:%M:%S')
 
-━━━ Terminal Output ━━━
 $CONTEXT
-━━━━━━━━━━━━━━━━━━━━━━
 
 💬 Reply here to send input"
 

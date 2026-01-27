@@ -666,6 +666,274 @@ test_urlencode_python() {
 }
 
 # =============================================================================
+# TESTS: TELEGRAM FORMATTING
+# =============================================================================
+
+test_format_for_telegram_strips_ansi() {
+    echo ""
+    echo "Testing: format_for_telegram strips ANSI codes"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        # Red text ANSI code
+        input=$'\x1b[31mRed text\x1b[0m'
+        result=$(format_for_telegram "$input")
+        assert_equals "Red text" "$result" "ANSI color codes stripped"
+
+        # Bold ANSI code
+        input=$'\x1b[1mBold text\x1b[0m'
+        result=$(format_for_telegram "$input")
+        assert_equals "Bold text" "$result" "ANSI bold codes stripped"
+
+        # Multiple ANSI codes
+        input=$'\x1b[1;31;40mStyled text\x1b[0m normal'
+        result=$(format_for_telegram "$input")
+        assert_equals "Styled text normal" "$result" "Multiple ANSI codes stripped"
+    )
+}
+
+test_format_for_telegram_converts_ascii_table() {
+    echo ""
+    echo "Testing: format_for_telegram converts ASCII tables"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        # Simple ASCII table with pipe separators
+        input="| Issue | Status |
+|-------|--------|
+| #2 Fix | Closed |"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$result" | grep -q "• #2 Fix — Closed"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: ASCII table converted to bullet point"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: ASCII table should convert to bullet point"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_converts_unicode_table() {
+    echo ""
+    echo "Testing: format_for_telegram converts Unicode tables"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        # Unicode box-drawing table
+        input="┌─────────────────────┬──────────┐
+│ Issue               │ Status   │
+├─────────────────────┼──────────┤
+│ #2 Critical fixes   │ Closed ✓ │
+└─────────────────────┴──────────┘"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$result" | grep -q "• #2 Critical fixes — Closed ✓"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Unicode table converted to bullet point"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Unicode table should convert to bullet point"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_preserves_normal_text() {
+    echo ""
+    echo "Testing: format_for_telegram preserves normal text"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        input="Hello world
+This is normal text
+With multiple lines"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ "$result" = "$input" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Normal text preserved"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Normal text should be preserved"
+            echo "    Expected: $input"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_handles_mixed_content() {
+    echo ""
+    echo "Testing: format_for_telegram handles mixed content"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        # Mix of normal text and table
+        input="Status report:
+| Task | Done |
+|------|------|
+| Test | Yes  |
+End of report"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$result" | grep -q "Status report:" && echo "$result" | grep -q "• Test — Yes" && echo "$result" | grep -q "End of report"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Mixed content handled correctly"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Mixed content should preserve text and convert table"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_handles_single_column_table() {
+    echo ""
+    echo "Testing: format_for_telegram handles single column table"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        input="| Items |
+|-------|
+| One   |
+| Two   |"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$result" | grep -q "• One" && echo "$result" | grep -q "• Two"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Single column table converted"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Single column table should convert to bullets"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_handles_multi_column_table() {
+    echo ""
+    echo "Testing: format_for_telegram handles multi-column table"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        input="| Col1 | Col2 | Col3 |
+|------|------|------|
+| A    | B    | C    |"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$result" | grep -q "• A — B — C"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Multi-column table converted with em-dashes"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Multi-column table should join with em-dashes"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_empty_input() {
+    echo ""
+    echo "Testing: format_for_telegram handles empty input"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+        result=$(format_for_telegram "")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ -z "$result" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Empty input returns empty output"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Empty input should return empty"
+        fi
+    )
+}
+
+test_format_for_telegram_border_only_lines_removed() {
+    echo ""
+    echo "Testing: format_for_telegram removes border-only lines"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        # Lines with only box characters should not appear in output
+        input="━━━━━━━━━━━━━━━━━━━━━━
+Some text
+━━━━━━━━━━━━━━━━━━━━━━"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if echo "$result" | grep -q "Some text" && ! echo "$result" | grep -q "━━━"; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Border-only lines removed"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Border-only lines should be removed"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+test_format_for_telegram_preserves_markdown() {
+    echo ""
+    echo "Testing: format_for_telegram preserves markdown formatting"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local input result
+
+        input="This has **bold** and *italic* and \`code\` formatting"
+        result=$(format_for_telegram "$input")
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ "$result" = "$input" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Markdown formatting preserved"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Markdown formatting should be preserved"
+            echo "    Expected: $input"
+            echo "    Got: $result"
+        fi
+    )
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -692,6 +960,16 @@ run_all_tests() {
     test_mask_sensitive
     test_urlencode_shell
     test_urlencode_python
+    test_format_for_telegram_strips_ansi
+    test_format_for_telegram_converts_ascii_table
+    test_format_for_telegram_converts_unicode_table
+    test_format_for_telegram_preserves_normal_text
+    test_format_for_telegram_handles_mixed_content
+    test_format_for_telegram_handles_single_column_table
+    test_format_for_telegram_handles_multi_column_table
+    test_format_for_telegram_empty_input
+    test_format_for_telegram_border_only_lines_removed
+    test_format_for_telegram_preserves_markdown
 
     echo ""
     echo "=============================================="
