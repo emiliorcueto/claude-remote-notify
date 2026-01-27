@@ -590,15 +590,15 @@ def handle_command(command, from_user):
     # -------------------------------------------------------------------------
     elif cmd == '/notify':
         script = CLAUDE_HOME / 'hooks' / 'remote-notify.sh'
-        
+
         if not script.exists():
             send_message(f"❌ [{SESSION_NAME}] Notify script not found")
             return True
-        
+
         # Valid subcommands
         valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'kill', 'help']
         subcmd = args.split()[0].lower() if args else 'help'
-        
+
         if subcmd not in valid_subcmds:
             send_message(
                 f"❌ [{SESSION_NAME}] Unknown subcommand: {subcmd}\n\n"
@@ -606,21 +606,41 @@ def handle_command(command, from_user):
                 "Try: /notify help"
             )
             return True
-        
+
+        # For on/off, handle flag file directly to avoid subprocess env issues
+        if subcmd == 'on':
+            notify_flag = CLAUDE_HOME / 'notifications-enabled'
+            try:
+                notify_flag.touch()
+                log(f"Notifications enabled (flag: {notify_flag})")
+                send_message(f"🔔 [{SESSION_NAME}] Notifications enabled")
+            except Exception as e:
+                log(f"Failed to enable notifications: {e}", "ERROR")
+                send_message(f"❌ [{SESSION_NAME}] Failed to enable notifications: {e}")
+            return True
+
+        if subcmd == 'off':
+            notify_flag = CLAUDE_HOME / 'notifications-enabled'
+            try:
+                notify_flag.unlink(missing_ok=True)
+                log(f"Notifications disabled (flag: {notify_flag})")
+                send_message(f"🔕 [{SESSION_NAME}] Notifications disabled")
+            except Exception as e:
+                log(f"Failed to disable notifications: {e}", "ERROR")
+                send_message(f"❌ [{SESSION_NAME}] Failed to disable notifications: {e}")
+            return True
+
         output = run_script(str(script), subcmd)
-        
+
         # Clean up ANSI color codes for Telegram
         output = re.sub(r'\x1b\[[0-9;]*m', '', output)
-        
+
         # Format response based on subcommand
         if subcmd == 'help':
             send_message(f"🔔 [{SESSION_NAME}] Notify Help\n\n{output[:3500]}")
-        elif subcmd in ['on', 'off']:
-            # These already send their own Telegram messages, just log
-            log(f"Notify {subcmd}: {output}")
         else:
             send_message(f"🔔 [{SESSION_NAME}] {subcmd.title()}\n\n{output[:2000]}")
-        
+
         return True
     
     # -------------------------------------------------------------------------
