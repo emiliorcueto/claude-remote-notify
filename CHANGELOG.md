@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- `/clear` and `/compact` commands via Telegram to manage Claude context remotely
+- Unit tests for command handlers (30 tests, 97% coverage)
 - Telegram message formatting: strip ANSI codes, convert tables to bullet points for readability
 - `format_for_telegram()` function in lib/common.sh for terminal output transformation
 
