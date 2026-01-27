@@ -22,6 +22,8 @@ Telegram Commands:
   /help              - Show all commands
   /status            - Session status + recent output
   /ping              - Test connectivity
+  /clear             - Clear Claude context
+  /compact           - Compact Claude context
   /preview [N]       - Send terminal output (default 50 lines)
   /preview back N    - Send Nth previous exchange
   /preview help      - Preview help
@@ -507,6 +509,9 @@ def handle_command(command, from_user):
             "/status - Session status + recent output\n"
             "/ping - Test listener connectivity\n"
             "/help - Show this help\n\n"
+            "━━━ Context ━━━\n"
+            "/clear - Clear Claude context\n"
+            "/compact - Compact Claude context\n\n"
             "━━━ Preview ━━━\n"
             "/preview - Send last 50 lines (with colors)\n"
             "/preview N - Send last N lines\n"
@@ -523,7 +528,37 @@ def handle_command(command, from_user):
             "Any other text is sent directly to Claude."
         )
         return True
-    
+
+    # -------------------------------------------------------------------------
+    # /clear - Clear Claude context
+    # -------------------------------------------------------------------------
+    elif cmd == '/clear':
+        if not tmux_session_exists():
+            send_message(f"❌ [{SESSION_NAME}] tmux session not found")
+            return True
+
+        send_message(f"🧹 [{SESSION_NAME}] Clearing context...")
+        if inject_to_tmux('/clear'):
+            log("Clear command sent to Claude")
+        else:
+            send_message(f"❌ [{SESSION_NAME}] Failed to send clear command")
+        return True
+
+    # -------------------------------------------------------------------------
+    # /compact - Compact Claude context
+    # -------------------------------------------------------------------------
+    elif cmd == '/compact':
+        if not tmux_session_exists():
+            send_message(f"❌ [{SESSION_NAME}] tmux session not found")
+            return True
+
+        send_message(f"📦 [{SESSION_NAME}] Compacting context...")
+        if inject_to_tmux('/compact'):
+            log("Compact command sent to Claude")
+        else:
+            send_message(f"❌ [{SESSION_NAME}] Failed to send compact command")
+        return True
+
     # -------------------------------------------------------------------------
     # /preview - Terminal output preview (runs telegram-preview.sh)
     # -------------------------------------------------------------------------

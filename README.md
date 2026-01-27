@@ -186,6 +186,9 @@ claude-notify off                # Disable notifications
 | `/help` | Show all available commands |
 | `/status` | Show session status + recent output |
 | `/ping` | Test listener connectivity |
+| **Context** | |
+| `/clear` | Clear Claude context |
+| `/compact` | Compact Claude context |
 | **Preview** | |
 | `/preview` | Send last 50 lines (with colors) |
 | `/preview 100` | Send last 100 lines |
@@ -407,6 +410,8 @@ This means Group Privacy is still enabled OR the bot needs to be re-added:
 | `exit` from tmux shell | Listener automatically stopped, tmux session closes |
 | Detach with Ctrl-b, d | Everything keeps running (Claude, listener, tmux) |
 | Session name with special chars | Sanitized to alphanumeric, underscore, hyphen only |
+| `/clear` when tmux not running | Shows error message, no action |
+| `/compact` when tmux not running | Shows error message, no action |
 | `/preview` without arguments | Sends last 50 lines (default) |
 | `/preview back` without number | Defaults to `back 0` (current response) |
 | `/notify` without subcommand | Shows help (same as `/notify help`) |
