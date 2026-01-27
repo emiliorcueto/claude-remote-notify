@@ -103,8 +103,10 @@ GLOBAL_CONFIG="$CLAUDE_HOME/telegram-remote.conf"
 TMUX_SESSION="${TMUX_SESSION:-claude-$SESSION_NAME}"
 
 # Use mktemp for secure temp file creation (prevents symlink attacks)
-TEMP_HTML=$(mktemp -t "claude-terminal-${SESSION_NAME}-XXXXXX.html")
-trap 'rm -f "$TEMP_HTML"' EXIT
+# Create temp directory so we can control the filename extension
+TEMP_DIR=$(mktemp -d -t "claude-preview-XXXXXX")
+TEMP_HTML="$TEMP_DIR/claude-terminal-${SESSION_NAME}.html"
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # -----------------------------------------------------------------------------
 # Load Configuration

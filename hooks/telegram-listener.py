@@ -732,7 +732,7 @@ def run_script(script_path, args=""):
     except Exception as e:
         return f"Error running script: {e}"
 
-def handle_command(command, from_user):
+def handle_command(command, from_user, message_id=None):
     """Handle bot commands"""
     parts = command.strip().split()
     cmd = parts[0].lower()
@@ -846,11 +846,17 @@ def handle_command(command, from_user):
         # For actual preview, the script sends the file directly to Telegram
         send_message(f"📺 [{SESSION_NAME}] Generating preview...")
         output = run_script(str(script), args)
-        
+
         # If there was an error (script outputs to stderr), report it
         if 'Error' in output or 'error' in output.lower():
+            if message_id:
+                set_message_reaction(message_id, "😱")
             send_message(f"⚠️ [{SESSION_NAME}] {output[:1000]}")
-        
+        else:
+            # Success - add reaction
+            if message_id:
+                set_message_reaction(message_id, "👀")
+
         return True
     
     # -------------------------------------------------------------------------
@@ -936,7 +942,7 @@ def handle_command(command, from_user):
     # -------------------------------------------------------------------------
     elif cmd == '/output':
         # Redirect to /preview handler
-        return handle_command(f'/preview {args}', from_user)
+        return handle_command(f'/preview {args}', from_user, message_id)
     
     return False
 
@@ -989,7 +995,7 @@ def run_listener():
                 # When paused, only respond to /notify start
                 if listener_paused:
                     if text.lower() == '/notify start':
-                        handle_command(text, from_user)
+                        handle_command(text, from_user, message_id)
                     # Silently ignore all other messages when paused
                     continue
 
@@ -1023,7 +1029,7 @@ def run_listener():
 
                 # Handle commands
                 if text.startswith('/'):
-                    if handle_command(text, from_user):
+                    if handle_command(text, from_user, message_id):
                         continue
 
                 # Inject into tmux

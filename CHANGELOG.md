@@ -15,6 +15,12 @@
 - Telegram message formatting: strip ANSI codes, convert tables to bullet points for readability
 - `format_for_telegram()` function in lib/common.sh for terminal output transformation
 
+### Fixed
+- Fix `/preview` command issues (Issue #20)
+  - Add emoji reaction (👀 on success, 😱 on error)
+  - Fix HTML file not rendering in Telegram (mktemp was adding suffix after .html)
+  - Use temp directory with proper `.html` filename for Telegram compatibility
+
 ### Changed
 - Replace `/notify kill` with `/notify stop` (pause mode) (Issue #18)
   - `/notify stop` pauses listener instead of terminating
