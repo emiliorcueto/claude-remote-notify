@@ -35,24 +35,42 @@ def get_safe_env(claude_home, session_name, tmux_session):
 
 
 def validate_script_path(script_path, claude_home):
-    """Validate script path is within CLAUDE_HOME and has safe permissions."""
-    path = Path(script_path).resolve()
+    """Validate script path is within CLAUDE_HOME and has safe permissions.
+
+    For symlinks within CLAUDE_HOME (dev mode), validates the target separately.
+    """
+    path = Path(script_path)
     claude_home_resolved = Path(claude_home).resolve()
 
-    # Script must be within CLAUDE_HOME
-    if not str(path).startswith(str(claude_home_resolved)):
-        raise ValueError(f"Script path {path} is outside CLAUDE_HOME")
+    # First check: the path (or symlink) must be within CLAUDE_HOME
+    # Resolve parent to handle path symlinks (e.g., /var -> /private/var on macOS)
+    # but keep the script name unresolved to preserve symlink detection
+    script_parent_resolved = path.parent.resolve()
+    script_abs = script_parent_resolved / path.name
+    if not str(script_abs).startswith(str(claude_home_resolved)):
+        raise ValueError(f"Script path {script_abs} is outside CLAUDE_HOME")
 
-    # Script must exist
+    # Script/symlink must exist
     if not path.exists():
         raise ValueError(f"Script not found: {path}")
 
-    # Script must be a file (not symlink to outside)
-    if not path.is_file():
-        raise ValueError(f"Not a file: {path}")
+    # Handle symlinks within CLAUDE_HOME (dev mode)
+    if path.is_symlink():
+        target = path.resolve()
+        # Validate target exists and is a file
+        if not target.exists():
+            raise ValueError(f"Symlink target not found: {target}")
+        if not target.is_file():
+            raise ValueError(f"Symlink target is not a file: {target}")
+        stat_info = target.stat()
+    else:
+        # Regular file - must be a file
+        if not path.is_file():
+            raise ValueError(f"Not a file: {path}")
+        stat_info = path.stat()
 
-    # Check script is owned by current user or root
-    stat_info = path.stat()
+    # Security checks on the actual file (or symlink target)
+    # Must be owned by current user or root
     if stat_info.st_uid not in (os.getuid(), 0):
         raise ValueError(f"Script not owned by current user or root: {path}")
 
@@ -60,7 +78,7 @@ def validate_script_path(script_path, claude_home):
     if stat_info.st_mode & 0o002:
         raise ValueError(f"Script is world-writable: {path}")
 
-    return path
+    return path.resolve()
 
 
 class TestSafeEnv:
@@ -170,17 +188,67 @@ class TestValidateScriptPath:
         with pytest.raises(ValueError, match="world-writable"):
             validate_script_path(str(script), self.claude_home)
 
-    def test_symlink_to_outside_rejected(self):
-        """Symlink pointing outside CLAUDE_HOME should be rejected."""
-        outside_target = Path(self.temp_dir) / 'outside-target.sh'
-        outside_target.write_text('#!/bin/bash\nmalicious')
+    def test_symlink_in_claude_home_to_safe_target_allowed(self):
+        """Symlink within CLAUDE_HOME pointing to safe target outside should work (dev mode)."""
+        # Create a safe target outside CLAUDE_HOME (owned by current user, not world-writable)
+        outside_target = Path(self.temp_dir) / 'dev-script.sh'
+        outside_target.write_text('#!/bin/bash\necho "dev mode"')
         outside_target.chmod(0o755)
 
-        symlink = self.hooks_dir / 'symlink.sh'
+        # Symlink within CLAUDE_HOME pointing to outside target
+        symlink = self.hooks_dir / 'dev-symlink.sh'
         symlink.symlink_to(outside_target)
 
-        # The symlink resolves to outside CLAUDE_HOME
+        # Should succeed - symlink is in CLAUDE_HOME, target is safe
+        result = validate_script_path(str(symlink), self.claude_home)
+        assert result == outside_target.resolve()
+
+    def test_symlink_outside_claude_home_rejected(self):
+        """Symlink located outside CLAUDE_HOME should be rejected."""
+        # Create a target
+        target = self.hooks_dir / 'target.sh'
+        target.write_text('#!/bin/bash\necho hello')
+        target.chmod(0o755)
+
+        # Symlink outside CLAUDE_HOME
+        outside_symlink = Path(self.temp_dir) / 'outside-symlink.sh'
+        outside_symlink.symlink_to(target)
+
+        # Should fail - symlink itself is outside CLAUDE_HOME
         with pytest.raises(ValueError, match="outside CLAUDE_HOME"):
+            validate_script_path(str(outside_symlink), self.claude_home)
+
+    def test_symlink_to_world_writable_target_rejected(self):
+        """Symlink to world-writable target should be rejected."""
+        # Create world-writable target outside CLAUDE_HOME
+        outside_target = Path(self.temp_dir) / 'world-writable.sh'
+        outside_target.write_text('#!/bin/bash\necho unsafe')
+        outside_target.chmod(0o777)  # World-writable
+
+        symlink = self.hooks_dir / 'unsafe-symlink.sh'
+        symlink.symlink_to(outside_target)
+
+        with pytest.raises(ValueError, match="world-writable"):
+            validate_script_path(str(symlink), self.claude_home)
+
+    def test_symlink_to_nonexistent_target_rejected(self):
+        """Symlink to non-existent target should be rejected."""
+        nonexistent = Path(self.temp_dir) / 'nonexistent.sh'
+        symlink = self.hooks_dir / 'broken-symlink.sh'
+        symlink.symlink_to(nonexistent)
+
+        with pytest.raises(ValueError, match="Script not found"):
+            validate_script_path(str(symlink), self.claude_home)
+
+    def test_symlink_to_directory_rejected(self):
+        """Symlink to directory should be rejected."""
+        target_dir = Path(self.temp_dir) / 'target-dir'
+        target_dir.mkdir()
+
+        symlink = self.hooks_dir / 'dir-symlink.sh'
+        symlink.symlink_to(target_dir)
+
+        with pytest.raises(ValueError, match="not a file"):
             validate_script_path(str(symlink), self.claude_home)
 
 

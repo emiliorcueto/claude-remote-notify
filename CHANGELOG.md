@@ -16,6 +16,10 @@
 - `format_for_telegram()` function in lib/common.sh for terminal output transformation
 
 ### Fixed
+- Fix dev mode symlinks blocked by security validation (Issue #16)
+  - Allow symlinks within CLAUDE_HOME to point to targets outside (dev mode setup)
+  - Validate symlink location, then check target's ownership and permissions
+  - Target must still be user-owned and not world-writable for security
 - Fix `/notify on` not working after `/notify off` via Telegram (Issue #12)
   - Handle on/off commands directly in Python listener instead of delegating to shell script
   - Eliminates subprocess environment issues that prevented flag file creation
