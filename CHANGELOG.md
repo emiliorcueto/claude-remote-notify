@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- Photo and document support via Telegram (Issue #1)
+  - Photos downloaded and injected as `[Image: /path]`
+  - Documents downloaded and injected as `[Document: /path]`
+  - Captions included with media
+  - Unsupported media (voice, video, stickers) returns friendly error
+  - Files stored in `/tmp/claude-telegram/` with session prefix
+  - Automatic cleanup on session exit
 - `/clear` and `/compact` commands via Telegram to manage Claude context remotely
 - Unit tests for command handlers (62 tests covering notify on/off toggle scenarios)
 - Telegram message formatting: strip ANSI codes, convert tables to bullet points for readability

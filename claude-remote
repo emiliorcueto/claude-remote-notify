@@ -338,6 +338,9 @@ cleanup() {
         rm -f "$PID_FILE"
     fi
 
+    # Clean up media temp files for this session
+    rm -f /tmp/claude-telegram/$CLAUDE_SESSION-* 2>/dev/null
+
     echo "Session closed."
     echo ""
 
