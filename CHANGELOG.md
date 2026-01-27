@@ -16,6 +16,9 @@
 - `format_for_telegram()` function in lib/common.sh for terminal output transformation
 
 ### Fixed
+- Fix `/notify kill` provides no feedback (Issue #18)
+  - Handle kill command directly in Python instead of via shell script
+  - Send confirmation message before shutting down gracefully
 - Fix dev mode symlinks blocked by security validation (Issue #16)
   - Allow symlinks within CLAUDE_HOME to point to targets outside (dev mode setup)
   - Validate symlink location, then check target's ownership and permissions

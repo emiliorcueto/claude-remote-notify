@@ -499,6 +499,13 @@ class TestNotifyCommand:
                         mock_send(f"❌ [{session_name}] Failed to disable: {e}")
                     return True
 
+                # Handle kill directly - send confirmation (would exit in real code)
+                if subcmd == 'kill':
+                    mock_log("Kill command received - shutting down gracefully")
+                    mock_send(f"🛑 [{session_name}] Listener shutting down")
+                    # In real code: cleanup_media_files(), remove_pid(), sys.exit(0)
+                    return 'EXIT'  # Special return value for tests
+
                 output = mock_run(subcmd)
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output)
 
@@ -630,6 +637,19 @@ class TestNotifyCommand:
         mock_send.assert_called_once()
         assert 'script not found' in mock_send.call_args[0][0]
         mock_run.assert_not_called()
+
+    def test_notify_kill_sends_confirmation(self):
+        """Test /notify kill sends confirmation message before exit - Issue #18."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify kill', 'testuser')
+
+        # Returns 'EXIT' in test (sys.exit(0) in real code)
+        assert result == 'EXIT'
+        mock_send.assert_called_once()
+        assert 'shutting down' in mock_send.call_args[0][0].lower()
+        mock_run.assert_not_called()  # kill handled directly, not via script
 
     def test_notify_on_case_insensitive(self):
         """Test /notify ON is case insensitive."""

@@ -895,6 +895,14 @@ def handle_command(command, from_user):
                 send_message(f"❌ [{SESSION_NAME}] Failed to disable notifications: {e}")
             return True
 
+        # Handle kill directly - send confirmation before exiting
+        if subcmd == 'kill':
+            log("Kill command received - shutting down gracefully")
+            send_message(f"🛑 [{SESSION_NAME}] Listener shutting down")
+            cleanup_media_files()
+            remove_pid()
+            sys.exit(0)
+
         output = run_script(str(script), subcmd)
 
         # Clean up ANSI color codes for Telegram
