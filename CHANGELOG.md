@@ -20,6 +20,7 @@
   - Add emoji reaction (👀 on success, 😱 on error)
   - Fix HTML file not rendering in Telegram (mktemp was adding suffix after .html)
   - Use temp directory with proper `.html` filename for Telegram compatibility
+  - Fix heredoc replacing stdin, causing terminal content to be lost
 
 ### Changed
 - Replace `/notify kill` with `/notify stop` (pause mode) (Issue #18)
