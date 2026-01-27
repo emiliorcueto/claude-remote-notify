@@ -30,7 +30,7 @@ Telegram Commands:
   /notify on|off     - Toggle notifications
   /notify status     - Notification state
   /notify config     - Full configuration
-  /notify start|kill - Listener control
+  /notify start|stop - Listener control
   /notify help       - Notify help
   (any text)         - Sent to Claude
 
@@ -107,6 +107,9 @@ PID_FILE = CLAUDE_HOME / 'pids' / f'listener-{SESSION_NAME}.pid'
 
 # Whitelisted environment variables for subprocess execution
 SAFE_ENV_VARS = {'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TERM', 'TMPDIR', 'LC_ALL', 'LC_CTYPE'}
+
+# Listener pause state (for /notify stop/start)
+listener_paused = False
 
 
 def get_safe_env():
@@ -784,7 +787,7 @@ def handle_command(command, from_user):
             "/notify on|off - Toggle notifications\n"
             "/notify status - Check notification state\n"
             "/notify config - Show full configuration\n"
-            "/notify start|kill - Listener control\n\n"
+            "/notify start|stop - Listener control\n\n"
             "━━━ Media ━━━\n"
             "📷 Photos - Downloaded, sent as [Image: /path]\n"
             "📄 Documents - Downloaded, sent as [Document: /path]\n"
@@ -861,7 +864,7 @@ def handle_command(command, from_user):
             return True
 
         # Valid subcommands
-        valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'kill', 'help']
+        valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'stop', 'help']
         subcmd = args.split()[0].lower() if args else 'help'
 
         if subcmd not in valid_subcmds:
@@ -871,6 +874,9 @@ def handle_command(command, from_user):
                 "Try: /notify help"
             )
             return True
+
+        # Declare global for pause state (used by stop/start)
+        global listener_paused
 
         # For on/off, handle flag file directly to avoid subprocess env issues
         if subcmd == 'on':
@@ -893,6 +899,23 @@ def handle_command(command, from_user):
             except Exception as e:
                 log(f"Failed to disable notifications: {e}", "ERROR")
                 send_message(f"❌ [{SESSION_NAME}] Failed to disable notifications: {e}")
+            return True
+
+        # Handle stop - pause the listener (can be resumed with /notify start)
+        if subcmd == 'stop':
+            listener_paused = True
+            log("Stop command received - listener paused")
+            send_message(f"⏸️ [{SESSION_NAME}] Listener paused. Send /notify start to resume.")
+            return True
+
+        # Handle start - resume paused listener
+        if subcmd == 'start':
+            if not listener_paused:
+                send_message(f"✅ [{SESSION_NAME}] Listener already running")
+            else:
+                listener_paused = False
+                log("Start command received - listener resumed")
+                send_message(f"▶️ [{SESSION_NAME}] Listener resumed")
             return True
 
         output = run_script(str(script), subcmd)
@@ -961,6 +984,14 @@ def run_listener():
 
                 message_id = message.get('message_id')
                 from_user = message.get('from', {}).get('username', 'unknown')
+                text = message.get('text', '').strip()
+
+                # When paused, only respond to /notify start
+                if listener_paused:
+                    if text.lower() == '/notify start':
+                        handle_command(text, from_user)
+                    # Silently ignore all other messages when paused
+                    continue
 
                 # Check for media first (photos, documents, unsupported types)
                 has_media = any(key in message for key in
@@ -984,9 +1015,7 @@ def run_listener():
                         send_message(f"❌ [{SESSION_NAME}] {inject_text}")
                     continue
 
-                # Handle text messages
-                text = message.get('text', '').strip()
-
+                # Handle text messages (text already extracted above for pause check)
                 if not text:
                     continue
 
