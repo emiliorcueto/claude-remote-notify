@@ -119,24 +119,42 @@ def get_safe_env():
 
 
 def validate_script_path(script_path):
-    """Validate script path is within CLAUDE_HOME and has safe permissions."""
-    path = Path(script_path).resolve()
+    """Validate script path is within CLAUDE_HOME and has safe permissions.
+
+    For symlinks within CLAUDE_HOME (dev mode), validates the target separately.
+    """
+    path = Path(script_path)
     claude_home_resolved = CLAUDE_HOME.resolve()
 
-    # Script must be within CLAUDE_HOME
-    if not str(path).startswith(str(claude_home_resolved)):
-        raise ValueError(f"Script path {path} is outside CLAUDE_HOME")
+    # First check: the path (or symlink) must be within CLAUDE_HOME
+    # Resolve parent to handle path symlinks (e.g., /var -> /private/var on macOS)
+    # but keep the script name unresolved to preserve symlink detection
+    script_parent_resolved = path.parent.resolve()
+    script_abs = script_parent_resolved / path.name
+    if not str(script_abs).startswith(str(claude_home_resolved)):
+        raise ValueError(f"Script path {script_abs} is outside CLAUDE_HOME")
 
-    # Script must exist
+    # Script/symlink must exist
     if not path.exists():
         raise ValueError(f"Script not found: {path}")
 
-    # Script must be a file (not symlink to outside)
-    if not path.is_file():
-        raise ValueError(f"Not a file: {path}")
+    # Handle symlinks within CLAUDE_HOME (dev mode)
+    if path.is_symlink():
+        target = path.resolve()
+        # Validate target exists and is a file
+        if not target.exists():
+            raise ValueError(f"Symlink target not found: {target}")
+        if not target.is_file():
+            raise ValueError(f"Symlink target is not a file: {target}")
+        stat_info = target.stat()
+    else:
+        # Regular file - must be a file
+        if not path.is_file():
+            raise ValueError(f"Not a file: {path}")
+        stat_info = path.stat()
 
-    # Check script is owned by current user or root
-    stat_info = path.stat()
+    # Security checks on the actual file (or symlink target)
+    # Must be owned by current user or root
     if stat_info.st_uid not in (os.getuid(), 0):
         raise ValueError(f"Script not owned by current user or root: {path}")
 
@@ -144,7 +162,7 @@ def validate_script_path(script_path):
     if stat_info.st_mode & 0o002:
         raise ValueError(f"Script is world-writable: {path}")
 
-    return path
+    return path.resolve()
 
 
 def mask_sensitive(value, show_start=3, show_end=2):
