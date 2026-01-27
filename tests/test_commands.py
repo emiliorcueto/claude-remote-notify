@@ -465,7 +465,7 @@ class TestNotifyCommand:
                     mock_send(f"❌ [{session_name}] Notify script not found")
                     return True
 
-                valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'kill', 'help']
+                valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'stop', 'help']
                 subcmd = args.split()[0].lower() if args else 'help'
 
                 if subcmd not in valid_subcmds:
@@ -499,12 +499,18 @@ class TestNotifyCommand:
                         mock_send(f"❌ [{session_name}] Failed to disable: {e}")
                     return True
 
-                # Handle kill directly - send confirmation (would exit in real code)
-                if subcmd == 'kill':
-                    mock_log("Kill command received - shutting down gracefully")
-                    mock_send(f"🛑 [{session_name}] Listener shutting down")
-                    # In real code: cleanup_media_files(), remove_pid(), sys.exit(0)
-                    return 'EXIT'  # Special return value for tests
+                # Handle stop - pause the listener
+                if subcmd == 'stop':
+                    mock_log("Stop command received - listener paused")
+                    mock_send(f"⏸️ [{session_name}] Listener paused. Send /notify start to resume.")
+                    return 'PAUSED'  # Special return value for tests
+
+                # Handle start - resume paused listener
+                if subcmd == 'start':
+                    # In tests, we track pause state via return value
+                    mock_log("Start command received - listener resumed")
+                    mock_send(f"▶️ [{session_name}] Listener resumed")
+                    return 'RESUMED'  # Special return value for tests
 
                 output = mock_run(subcmd)
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output)
@@ -638,18 +644,32 @@ class TestNotifyCommand:
         assert 'script not found' in mock_send.call_args[0][0]
         mock_run.assert_not_called()
 
-    def test_notify_kill_sends_confirmation(self):
-        """Test /notify kill sends confirmation message before exit - Issue #18."""
+    def test_notify_stop_pauses_listener(self):
+        """Test /notify stop pauses listener and sends confirmation - Issue #18."""
         handle_command, mock_send, mock_run, mock_exists, mock_log = \
             self.create_handle_command(script_exists=True)
 
-        result = handle_command('/notify kill', 'testuser')
+        result = handle_command('/notify stop', 'testuser')
 
-        # Returns 'EXIT' in test (sys.exit(0) in real code)
-        assert result == 'EXIT'
+        # Returns 'PAUSED' in test
+        assert result == 'PAUSED'
         mock_send.assert_called_once()
-        assert 'shutting down' in mock_send.call_args[0][0].lower()
-        mock_run.assert_not_called()  # kill handled directly, not via script
+        assert 'paused' in mock_send.call_args[0][0].lower()
+        assert '/notify start' in mock_send.call_args[0][0]
+        mock_run.assert_not_called()  # stop handled directly, not via script
+
+    def test_notify_start_resumes_listener(self):
+        """Test /notify start resumes paused listener - Issue #18."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify start', 'testuser')
+
+        # Returns 'RESUMED' in test
+        assert result == 'RESUMED'
+        mock_send.assert_called_once()
+        assert 'resumed' in mock_send.call_args[0][0].lower()
+        mock_run.assert_not_called()  # start handled directly, not via script
 
     def test_notify_on_case_insensitive(self):
         """Test /notify ON is case insensitive."""

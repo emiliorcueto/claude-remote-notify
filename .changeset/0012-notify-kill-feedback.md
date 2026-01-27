@@ -2,8 +2,10 @@
 "claude-remote-notify": patch
 ---
 
-Fix /notify kill provides no feedback
+Replace /notify kill with /notify stop (pause mode)
 
-- Handle kill command directly in Python instead of via shell script
-- Send confirmation message ("🛑 Listener shutting down") before exit
-- Gracefully cleanup media files and PID file before exiting
+- Rename /notify kill to /notify stop
+- Stop pauses listener instead of terminating (can resume with /notify start)
+- /notify start resumes paused listener
+- When paused, listener only responds to /notify start (ignores other messages)
+- Enables remote listener control via Telegram without losing the process
