@@ -4,11 +4,15 @@
 
 ### Added
 - `/clear` and `/compact` commands via Telegram to manage Claude context remotely
-- Unit tests for command handlers (30 tests, 97% coverage)
+- Unit tests for command handlers (62 tests covering notify on/off toggle scenarios)
 - Telegram message formatting: strip ANSI codes, convert tables to bullet points for readability
 - `format_for_telegram()` function in lib/common.sh for terminal output transformation
 
 ### Fixed
+- Fix `/notify on` not working after `/notify off` via Telegram (Issue #12)
+  - Handle on/off commands directly in Python listener instead of delegating to shell script
+  - Eliminates subprocess environment issues that prevented flag file creation
+  - Listener now sends confirmation messages directly for reliable feedback
 - Fix touchpad scroll cycling through prompt history instead of conversation history
   - Enable tmux mouse mode for claude-remote sessions
   - Add text selection hint (Option+drag on Mac) to session startup output

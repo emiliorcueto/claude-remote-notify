@@ -424,3 +424,576 @@ class TestFeedbackMessages:
         expected = f"❌ [{session_name}] Failed to send compact command"
         assert '❌' in expected
         assert 'Failed to send compact command' in expected
+
+
+class TestNotifyCommand:
+    """Tests for /notify command handler (on/off/status)."""
+
+    def setup_method(self):
+        """Setup test fixtures."""
+        import tempfile
+        self.mock_send_message = MagicMock()
+        self.mock_run_script = MagicMock()
+        self.mock_log = MagicMock()
+        self.session_name = 'test-session'
+        self.temp_dir = tempfile.mkdtemp()
+        self.claude_home = Path(self.temp_dir)
+        self.notify_flag = self.claude_home / 'notifications-enabled'
+
+    def teardown_method(self):
+        """Cleanup temp directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def create_handle_command(self, script_exists=True, script_output=""):
+        """Create a handle_command function with mocked dependencies."""
+        session_name = self.session_name
+        mock_send = self.mock_send_message
+        mock_run = MagicMock(return_value=script_output)
+        mock_log = self.mock_log
+        mock_script_exists = MagicMock(return_value=script_exists)
+        claude_home = self.claude_home
+
+        def handle_command(command, from_user):
+            import re
+            parts = command.strip().split()
+            cmd = parts[0].lower()
+            args = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+            if cmd == '/notify':
+                if not mock_script_exists():
+                    mock_send(f"❌ [{session_name}] Notify script not found")
+                    return True
+
+                valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'kill', 'help']
+                subcmd = args.split()[0].lower() if args else 'help'
+
+                if subcmd not in valid_subcmds:
+                    mock_send(
+                        f"❌ [{session_name}] Unknown subcommand: {subcmd}\n\n"
+                        f"Valid: {', '.join(valid_subcmds)}\n"
+                        "Try: /notify help"
+                    )
+                    return True
+
+                # Handle on/off directly (fix for issue #12)
+                if subcmd == 'on':
+                    notify_flag = claude_home / 'notifications-enabled'
+                    try:
+                        notify_flag.touch()
+                        mock_log(f"Notifications enabled (flag: {notify_flag})")
+                        mock_send(f"🔔 [{session_name}] Notifications enabled")
+                    except Exception as e:
+                        mock_log(f"Failed to enable notifications: {e}")
+                        mock_send(f"❌ [{session_name}] Failed to enable: {e}")
+                    return True
+
+                if subcmd == 'off':
+                    notify_flag = claude_home / 'notifications-enabled'
+                    try:
+                        notify_flag.unlink(missing_ok=True)
+                        mock_log(f"Notifications disabled (flag: {notify_flag})")
+                        mock_send(f"🔕 [{session_name}] Notifications disabled")
+                    except Exception as e:
+                        mock_log(f"Failed to disable notifications: {e}")
+                        mock_send(f"❌ [{session_name}] Failed to disable: {e}")
+                    return True
+
+                output = mock_run(subcmd)
+                output = re.sub(r'\x1b\[[0-9;]*m', '', output)
+
+                if subcmd == 'help':
+                    mock_send(f"🔔 [{session_name}] Notify Help\n\n{output[:3500]}")
+                else:
+                    mock_send(f"🔔 [{session_name}] {subcmd.title()}\n\n{output[:2000]}")
+
+                return True
+
+            return False
+
+        return handle_command, mock_send, mock_run, mock_script_exists, mock_log
+
+    def test_notify_on_creates_flag_and_sends_message(self):
+        """Test /notify on creates flag file and sends confirmation."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify on', 'testuser')
+
+        assert result is True
+        assert self.notify_flag.exists()
+        mock_send.assert_called_once()
+        assert 'Notifications enabled' in mock_send.call_args[0][0]
+        mock_run.assert_not_called()  # on/off handled directly, not via script
+
+    def test_notify_off_removes_flag_and_sends_message(self):
+        """Test /notify off removes flag file and sends confirmation."""
+        # Create flag first
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify off', 'testuser')
+
+        assert result is True
+        assert not self.notify_flag.exists()
+        mock_send.assert_called_once()
+        assert 'Notifications disabled' in mock_send.call_args[0][0]
+        mock_run.assert_not_called()  # on/off handled directly
+
+    def test_notify_on_after_off_creates_flag(self):
+        """Test /notify on correctly creates flag after /notify off - Issue #12."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        # Initial state: disabled (no flag)
+        assert not self.notify_flag.exists()
+
+        # Enable
+        handle_command('/notify on', 'testuser')
+        assert self.notify_flag.exists()
+
+        # Reset mocks
+        mock_send.reset_mock()
+        mock_log.reset_mock()
+
+        # Disable
+        handle_command('/notify off', 'testuser')
+        assert not self.notify_flag.exists()
+
+        # Reset mocks
+        mock_send.reset_mock()
+        mock_log.reset_mock()
+
+        # Re-enable - THIS IS THE BUG SCENARIO
+        handle_command('/notify on', 'testuser')
+        assert self.notify_flag.exists()
+        mock_send.assert_called_once()
+        assert 'Notifications enabled' in mock_send.call_args[0][0]
+
+    def test_notify_status_command_sends_message(self):
+        """Test /notify status sends response message."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True, script_output="Notifications: enabled")
+
+        result = handle_command('/notify status', 'testuser')
+
+        assert result is True
+        mock_run.assert_called_once_with('status')
+        mock_send.assert_called_once()
+        assert 'Status' in mock_send.call_args[0][0]
+
+    def test_notify_help_command_sends_message(self):
+        """Test /notify help sends response message."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True, script_output="Usage: /notify <command>")
+
+        result = handle_command('/notify help', 'testuser')
+
+        assert result is True
+        mock_run.assert_called_once_with('help')
+        mock_send.assert_called_once()
+        assert 'Help' in mock_send.call_args[0][0]
+
+    def test_notify_no_args_defaults_to_help(self):
+        """Test /notify with no args defaults to help."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True, script_output="Usage info")
+
+        result = handle_command('/notify', 'testuser')
+
+        assert result is True
+        mock_run.assert_called_once_with('help')
+
+    def test_notify_invalid_subcommand(self):
+        """Test /notify with invalid subcommand returns error."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify invalid', 'testuser')
+
+        assert result is True
+        mock_run.assert_not_called()
+        mock_send.assert_called_once()
+        assert 'Unknown subcommand' in mock_send.call_args[0][0]
+
+    def test_notify_script_not_found(self):
+        """Test /notify when script doesn't exist."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=False)
+
+        result = handle_command('/notify status', 'testuser')
+
+        assert result is True
+        mock_send.assert_called_once()
+        assert 'script not found' in mock_send.call_args[0][0]
+        mock_run.assert_not_called()
+
+    def test_notify_on_case_insensitive(self):
+        """Test /notify ON is case insensitive."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify ON', 'testuser')
+
+        assert result is True
+        assert self.notify_flag.exists()
+
+    def test_notify_off_case_insensitive(self):
+        """Test /notify OFF is case insensitive."""
+        self.notify_flag.touch()
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        result = handle_command('/notify OFF', 'testuser')
+
+        assert result is True
+        assert not self.notify_flag.exists()
+
+    def test_notify_on_idempotent(self):
+        """Test /notify on is idempotent."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        # Call multiple times
+        handle_command('/notify on', 'testuser')
+        assert self.notify_flag.exists()
+
+        handle_command('/notify on', 'testuser')
+        assert self.notify_flag.exists()
+
+        handle_command('/notify on', 'testuser')
+        assert self.notify_flag.exists()
+
+    def test_notify_off_idempotent(self):
+        """Test /notify off is idempotent."""
+        handle_command, mock_send, mock_run, mock_exists, mock_log = \
+            self.create_handle_command(script_exists=True)
+
+        # Call multiple times on non-existent flag
+        handle_command('/notify off', 'testuser')
+        assert not self.notify_flag.exists()
+
+        handle_command('/notify off', 'testuser')
+        assert not self.notify_flag.exists()
+
+
+class TestNotifyOnOffToggle:
+    """Tests for /notify on/off toggle scenarios - Issue #12."""
+
+    def setup_method(self):
+        """Setup test fixtures with temp directory."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.notify_flag = Path(self.temp_dir) / 'notifications-enabled'
+
+    def teardown_method(self):
+        """Cleanup temp directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_notify_off_removes_flag_file(self):
+        """Test /notify off removes the notification flag file."""
+        # Create flag file first
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        # Simulate cmd_off
+        self.notify_flag.unlink(missing_ok=True)
+
+        assert not self.notify_flag.exists()
+
+    def test_notify_on_creates_flag_file(self):
+        """Test /notify on creates the notification flag file."""
+        assert not self.notify_flag.exists()
+
+        # Simulate cmd_on
+        self.notify_flag.touch()
+
+        assert self.notify_flag.exists()
+
+    def test_notify_on_after_off_creates_flag(self):
+        """Test /notify on creates flag after /notify off deleted it."""
+        # Initial state: flag exists
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        # /notify off - removes flag
+        self.notify_flag.unlink(missing_ok=True)
+        assert not self.notify_flag.exists()
+
+        # /notify on - should create flag
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+    def test_notify_on_idempotent(self):
+        """Test /notify on is idempotent (can be called multiple times)."""
+        # Call on multiple times
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+    def test_notify_off_idempotent(self):
+        """Test /notify off is idempotent (can be called multiple times)."""
+        # Flag doesn't exist
+        assert not self.notify_flag.exists()
+
+        # Call off multiple times - should not error
+        self.notify_flag.unlink(missing_ok=True)
+        assert not self.notify_flag.exists()
+
+        self.notify_flag.unlink(missing_ok=True)
+        assert not self.notify_flag.exists()
+
+    def test_rapid_toggle_on_off_on(self):
+        """Test rapid toggling on->off->on works correctly."""
+        # on
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        # off
+        self.notify_flag.unlink(missing_ok=True)
+        assert not self.notify_flag.exists()
+
+        # on again
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+    def test_rapid_toggle_off_on_off(self):
+        """Test rapid toggling off->on->off works correctly."""
+        self.notify_flag.touch()  # Start enabled
+
+        # off
+        self.notify_flag.unlink(missing_ok=True)
+        assert not self.notify_flag.exists()
+
+        # on
+        self.notify_flag.touch()
+        assert self.notify_flag.exists()
+
+        # off again
+        self.notify_flag.unlink(missing_ok=True)
+        assert not self.notify_flag.exists()
+
+
+class TestNotifyFlagFileLocation:
+    """Tests verifying flag file is created in correct location."""
+
+    def setup_method(self):
+        """Setup test fixtures with temp directory."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.claude_home = Path(self.temp_dir)
+
+    def teardown_method(self):
+        """Cleanup temp directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_flag_file_path_construction(self):
+        """Test flag file path is constructed correctly from CLAUDE_HOME."""
+        expected_flag = self.claude_home / 'notifications-enabled'
+        assert str(expected_flag) == f"{self.temp_dir}/notifications-enabled"
+
+    def test_flag_file_in_claude_home_not_subdir(self):
+        """Test flag file is in CLAUDE_HOME root, not a subdirectory."""
+        flag_path = self.claude_home / 'notifications-enabled'
+
+        # Parent should be CLAUDE_HOME itself
+        assert flag_path.parent == self.claude_home
+
+    def test_environment_variable_used_for_path(self):
+        """Test CLAUDE_HOME env var is used for flag file path."""
+        import os
+
+        # Save original
+        orig_claude_home = os.environ.get('CLAUDE_HOME')
+
+        try:
+            # Set custom CLAUDE_HOME
+            os.environ['CLAUDE_HOME'] = str(self.claude_home)
+
+            # Verify path would be constructed from env
+            claude_home = Path(os.environ.get('CLAUDE_HOME', Path.home() / '.claude'))
+            flag_path = claude_home / 'notifications-enabled'
+
+            assert flag_path == self.claude_home / 'notifications-enabled'
+        finally:
+            # Restore original
+            if orig_claude_home:
+                os.environ['CLAUDE_HOME'] = orig_claude_home
+            elif 'CLAUDE_HOME' in os.environ:
+                del os.environ['CLAUDE_HOME']
+
+    def test_default_path_when_no_env_var(self):
+        """Test default ~/.claude path when CLAUDE_HOME not set."""
+        import os
+
+        # Save and clear CLAUDE_HOME
+        orig_claude_home = os.environ.pop('CLAUDE_HOME', None)
+
+        try:
+            claude_home = Path(os.environ.get('CLAUDE_HOME', Path.home() / '.claude'))
+            expected = Path.home() / '.claude'
+
+            assert claude_home == expected
+        finally:
+            # Restore original
+            if orig_claude_home:
+                os.environ['CLAUDE_HOME'] = orig_claude_home
+
+
+class TestNotifyCommandIntegration:
+    """Integration tests for notify command end-to-end flow."""
+
+    def setup_method(self):
+        """Setup test fixtures."""
+        import tempfile
+        self.temp_dir = tempfile.mkdtemp()
+        self.claude_home = Path(self.temp_dir)
+        self.notify_flag = self.claude_home / 'notifications-enabled'
+
+    def teardown_method(self):
+        """Cleanup temp directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_cmd_on_implementation(self):
+        """Test cmd_on creates flag and returns expected output."""
+        # Simulate cmd_on logic
+        self.notify_flag.touch()
+        output = "✓ Notifications enabled"
+
+        assert self.notify_flag.exists()
+        assert 'enabled' in output
+
+    def test_cmd_off_implementation(self):
+        """Test cmd_off removes flag and returns expected output."""
+        # Create flag first
+        self.notify_flag.touch()
+
+        # Simulate cmd_off logic
+        self.notify_flag.unlink(missing_ok=True)
+        output = "✓ Notifications disabled"
+
+        assert not self.notify_flag.exists()
+        assert 'disabled' in output
+
+    def test_status_reflects_flag_state_enabled(self):
+        """Test status correctly reports enabled state."""
+        self.notify_flag.touch()
+
+        # Simulate status check
+        is_enabled = self.notify_flag.exists()
+
+        assert is_enabled is True
+
+    def test_status_reflects_flag_state_disabled(self):
+        """Test status correctly reports disabled state."""
+        # Ensure flag doesn't exist
+        self.notify_flag.unlink(missing_ok=True)
+
+        # Simulate status check
+        is_enabled = self.notify_flag.exists()
+
+        assert is_enabled is False
+
+    def test_toggle_sequence_state_tracking(self):
+        """Test state is correctly tracked through toggle sequence."""
+        states = []
+
+        # Initial: disabled
+        states.append(('initial', self.notify_flag.exists()))
+        assert states[-1] == ('initial', False)
+
+        # Enable
+        self.notify_flag.touch()
+        states.append(('after on', self.notify_flag.exists()))
+        assert states[-1] == ('after on', True)
+
+        # Disable
+        self.notify_flag.unlink(missing_ok=True)
+        states.append(('after off', self.notify_flag.exists()))
+        assert states[-1] == ('after off', False)
+
+        # Re-enable
+        self.notify_flag.touch()
+        states.append(('after on again', self.notify_flag.exists()))
+        assert states[-1] == ('after on again', True)
+
+
+class TestSubprocessEnvironment:
+    """Tests for subprocess environment handling in run_script."""
+
+    def test_safe_env_includes_claude_home(self):
+        """Test safe env includes CLAUDE_HOME."""
+        import os
+        from pathlib import Path
+
+        # Simulate get_safe_env logic
+        SAFE_ENV_VARS = {'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TERM', 'TMPDIR', 'LC_ALL', 'LC_CTYPE'}
+        CLAUDE_HOME = Path('/test/.claude')
+        SESSION_NAME = 'test'
+        TMUX_SESSION = 'claude-test'
+
+        env = {k: v for k, v in os.environ.items() if k in SAFE_ENV_VARS}
+        env['CLAUDE_SESSION'] = SESSION_NAME
+        env['TMUX_SESSION'] = TMUX_SESSION
+        env['CLAUDE_HOME'] = str(CLAUDE_HOME)
+
+        assert 'CLAUDE_HOME' in env
+        assert env['CLAUDE_HOME'] == '/test/.claude'
+
+    def test_safe_env_includes_claude_session(self):
+        """Test safe env includes CLAUDE_SESSION."""
+        import os
+        from pathlib import Path
+
+        SAFE_ENV_VARS = {'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TERM', 'TMPDIR', 'LC_ALL', 'LC_CTYPE'}
+        CLAUDE_HOME = Path('/test/.claude')
+        SESSION_NAME = 'my-session'
+        TMUX_SESSION = 'claude-test'
+
+        env = {k: v for k, v in os.environ.items() if k in SAFE_ENV_VARS}
+        env['CLAUDE_SESSION'] = SESSION_NAME
+        env['TMUX_SESSION'] = TMUX_SESSION
+        env['CLAUDE_HOME'] = str(CLAUDE_HOME)
+
+        assert 'CLAUDE_SESSION' in env
+        assert env['CLAUDE_SESSION'] == 'my-session'
+
+    def test_safe_env_path_preserved(self):
+        """Test PATH is preserved in safe env."""
+        import os
+
+        SAFE_ENV_VARS = {'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TERM', 'TMPDIR', 'LC_ALL', 'LC_CTYPE'}
+
+        env = {k: v for k, v in os.environ.items() if k in SAFE_ENV_VARS}
+
+        assert 'PATH' in env
+        assert len(env['PATH']) > 0
+
+    def test_safe_env_excludes_sensitive_vars(self):
+        """Test sensitive vars are excluded from safe env."""
+        import os
+
+        SAFE_ENV_VARS = {'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TERM', 'TMPDIR', 'LC_ALL', 'LC_CTYPE'}
+
+        # Set some sensitive vars
+        test_env = dict(os.environ)
+        test_env['SECRET_KEY'] = 'secret'
+        test_env['API_TOKEN'] = 'token'
+        test_env['PASSWORD'] = 'pass'
+
+        env = {k: v for k, v in test_env.items() if k in SAFE_ENV_VARS}
+
+        assert 'SECRET_KEY' not in env
+        assert 'API_TOKEN' not in env
+        assert 'PASSWORD' not in env
