@@ -2,6 +2,16 @@
 # =============================================================================
 # setup-telegram-remote.sh - Install Claude Remote (Multi-Session)
 # =============================================================================
+#
+# Usage:
+#   ./setup-telegram-remote.sh [OPTIONS]
+#
+# Options:
+#   --dev       Use symlinks instead of copies (for development)
+#   --force     Force full reinstall
+#   --help      Show this help
+#
+# =============================================================================
 
 set -e
 
@@ -15,6 +25,7 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+DEV_MODE=false
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -140,8 +151,12 @@ check_dependencies() {
 # -----------------------------------------------------------------------------
 
 install_files() {
-    info "Installing files..."
-    
+    if $DEV_MODE; then
+        info "Installing files (DEV MODE - using symlinks)..."
+    else
+        info "Installing files..."
+    fi
+
     # Create directories
     mkdir -p "$CLAUDE_HOME/hooks"
     mkdir -p "$CLAUDE_HOME/commands"
@@ -149,43 +164,102 @@ install_files() {
     mkdir -p "$CLAUDE_HOME/pids"
     mkdir -p "$CLAUDE_HOME/logs"
     mkdir -p "$HOME/.local/bin"
-    
+
+    # Helper function to install a file (copy or symlink based on mode)
+    install_file() {
+        local src="$1"
+        local dest="$2"
+        local make_exec="${3:-false}"
+
+        if [ ! -f "$src" ]; then
+            return 1
+        fi
+
+        # Remove existing file/symlink
+        rm -f "$dest"
+
+        if $DEV_MODE; then
+            ln -sf "$src" "$dest"
+        else
+            cp "$src" "$dest"
+        fi
+
+        if $make_exec; then
+            chmod +x "$dest"
+        fi
+
+        return 0
+    }
+
     # Install hooks
     for hook in telegram-notify.sh telegram-listener.py telegram-preview.sh remote-notify.sh; do
-        if [ -f "$SCRIPT_DIR/hooks/$hook" ]; then
-            cp "$SCRIPT_DIR/hooks/$hook" "$CLAUDE_HOME/hooks/"
-            chmod +x "$CLAUDE_HOME/hooks/$hook"
-            success "Installed hooks/$hook"
+        if install_file "$SCRIPT_DIR/hooks/$hook" "$CLAUDE_HOME/hooks/$hook" true; then
+            if $DEV_MODE; then
+                success "Linked hooks/$hook"
+            else
+                success "Installed hooks/$hook"
+            fi
         fi
     done
-    
+
+    # Install shared library
+    if [ -d "$SCRIPT_DIR/lib" ]; then
+        mkdir -p "$CLAUDE_HOME/lib"
+        for lib in "$SCRIPT_DIR"/lib/*.sh; do
+            if [ -f "$lib" ]; then
+                local libname=$(basename "$lib")
+                if install_file "$lib" "$CLAUDE_HOME/lib/$libname" false; then
+                    if $DEV_MODE; then
+                        success "Linked lib/$libname"
+                    else
+                        success "Installed lib/$libname"
+                    fi
+                fi
+            fi
+        done
+    fi
+
     # Install commands
     for cmd in "$SCRIPT_DIR"/commands/*.md; do
         if [ -f "$cmd" ]; then
-            cp "$cmd" "$CLAUDE_HOME/commands/"
-            success "Installed commands/$(basename "$cmd")"
+            local cmdname=$(basename "$cmd")
+            if install_file "$cmd" "$CLAUDE_HOME/commands/$cmdname" false; then
+                if $DEV_MODE; then
+                    success "Linked commands/$cmdname"
+                else
+                    success "Installed commands/$cmdname"
+                fi
+            fi
         fi
     done
-    
+
     # Install launchers
-    if [ -f "$SCRIPT_DIR/claude-remote" ]; then
-        cp "$SCRIPT_DIR/claude-remote" "$HOME/.local/bin/"
-        chmod +x "$HOME/.local/bin/claude-remote"
-        success "Installed claude-remote"
+    if install_file "$SCRIPT_DIR/claude-remote" "$HOME/.local/bin/claude-remote" true; then
+        if $DEV_MODE; then
+            success "Linked claude-remote"
+        else
+            success "Installed claude-remote"
+        fi
     fi
-    
+
     # Install helper scripts
-    if [ -f "$SCRIPT_DIR/get-topic-ids.sh" ]; then
-        cp "$SCRIPT_DIR/get-topic-ids.sh" "$HOME/.local/bin/"
-        chmod +x "$HOME/.local/bin/get-topic-ids.sh"
-        success "Installed get-topic-ids.sh"
+    if install_file "$SCRIPT_DIR/get-topic-ids.sh" "$HOME/.local/bin/get-topic-ids.sh" true; then
+        if $DEV_MODE; then
+            success "Linked get-topic-ids.sh"
+        else
+            success "Installed get-topic-ids.sh"
+        fi
     fi
-    
+
     # Copy claude-notify from v1 if exists or create simple version
     if [ -f "$SCRIPT_DIR/claude-notify" ]; then
-        cp "$SCRIPT_DIR/claude-notify" "$HOME/.local/bin/"
-        chmod +x "$HOME/.local/bin/claude-notify"
-        success "Installed claude-notify"
+        if install_file "$SCRIPT_DIR/claude-notify" "$HOME/.local/bin/claude-notify" true; then
+            if $DEV_MODE; then
+                success "Linked claude-notify"
+            else
+                success "Installed claude-notify"
+            fi
+        fi
     else
         # Create simple claude-notify
         cat > "$HOME/.local/bin/claude-notify" << 'NOTIFY_SCRIPT'
@@ -646,6 +720,14 @@ show_completion() {
     echo -e "${GREEN}                    Installation Complete!                  ${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
     echo ""
+
+    if $DEV_MODE; then
+        echo -e "${YELLOW}Development Mode:${NC} Files are symlinked to project directory"
+        echo "  Changes to project files take effect immediately"
+        echo "  Project location: $SCRIPT_DIR"
+        echo ""
+    fi
+
     echo "Quick Start:"
     echo ""
     echo "  # Start default session"
@@ -671,15 +753,49 @@ show_completion() {
     echo ""
 }
 
+show_help() {
+    echo "Usage: ./setup-telegram-remote.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --dev       Use symlinks instead of copies (for development)"
+    echo "              Changes to project files take effect immediately"
+    echo "  --force     Force full reinstall"
+    echo "  --help      Show this help"
+    echo ""
+    echo "Examples:"
+    echo "  ./setup-telegram-remote.sh           # Normal install (copies files)"
+    echo "  ./setup-telegram-remote.sh --dev     # Dev install (symlinks files)"
+    echo "  ./setup-telegram-remote.sh --force   # Force full reinstall"
+    echo ""
+}
+
 main() {
+    # Parse arguments
+    local force=false
+    for arg in "$@"; do
+        case "$arg" in
+            --dev|-d)
+                DEV_MODE=true
+                ;;
+            --force|-f)
+                force=true
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+        esac
+    done
+
     banner
+
+    if $DEV_MODE; then
+        warn "Development mode: using symlinks (changes take effect immediately)"
+        echo ""
+    fi
 
     # Always ensure PATH is configured (runs every time)
     update_path
-
-    # Check for --force flag
-    local force=false
-    [[ "$1" == "--force" || "$1" == "-f" ]] && force=true
 
     # Check if already set up
     if ! $force && check_existing_setup; then

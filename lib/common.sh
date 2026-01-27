@@ -406,3 +406,158 @@ urlencode_shell() {
     done
     echo "$encoded"
 }
+
+# =============================================================================
+# TELEGRAM FORMATTING
+# =============================================================================
+
+# Format terminal output for Telegram readability
+# - Strips ANSI escape codes
+# - Converts ASCII/Unicode tables to bullet points
+# - Preserves basic markdown (bold, italic, code)
+# Usage: formatted=$(format_for_telegram "$raw_text")
+format_for_telegram() {
+    local input="$1"
+
+    python3 -c '
+import re
+import sys
+import unicodedata
+
+def format_for_telegram(text):
+    # Strip ANSI escape codes
+    ansi_pattern = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[^\x1b]*")
+    text = ansi_pattern.sub("", text)
+
+    # Strip other control characters (except newline, tab)
+    def clean_char(c):
+        if c in "\n\t":
+            return c
+        if ord(c) < 32:
+            return ""
+        cat = unicodedata.category(c)
+        if cat in ("Cc", "Cf"):  # Control chars, format chars
+            return ""
+        return c
+
+    text = "".join(clean_char(c) for c in text)
+
+    # Box-drawing characters (Unicode)
+    box_chars = "─━│┌┐└┘├┤┬┴┼╭╮╯╰═║╔╗╚╝╠╣╦╩╬"
+
+    # Pattern for decorative/border lines (box chars, underscores, dashes, equals)
+    decorative_pattern = re.compile(r"^[\s" + re.escape(box_chars) + r"_=\-\+]+$")
+
+    # Pattern for lines that are only whitespace (including non-breaking spaces)
+    whitespace_only = re.compile(r"^[\s\u00a0\u2000-\u200f\u2028\u2029\u202f\u205f\u3000]*$")
+
+    lines = text.split("\n")
+    result = []
+    table_rows = []
+    in_table = False
+    header_row = None
+
+    def is_decorative_line(line):
+        """Check if line is decorative (borders, separators, whitespace-only)"""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        if decorative_pattern.match(stripped):
+            return True
+        if whitespace_only.match(line):
+            return True
+        # Table separator lines like |------|------| or |======|======|
+        normalized = stripped.replace("│", "|")
+        if normalized.startswith("|") and normalized.endswith("|"):
+            inner = normalized[1:-1]  # Remove outer pipes
+            # If inner content is only dashes, equals, colons, pipes, spaces - its a separator
+            if re.match(r"^[\-=:\|\s\+]+$", inner):
+                return True
+        return False
+
+    def is_table_row(line):
+        """Check if line is a proper table row - must start AND end with | or │"""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        # Normalize to ASCII pipe
+        normalized = stripped.replace("│", "|")
+        # Strict: must start AND end with pipe (standard markdown table format)
+        return normalized.startswith("|") and normalized.endswith("|")
+
+    def extract_cells(line):
+        """Extract cell content from a table row"""
+        line = line.replace("│", "|")
+        cells = [cell.strip() for cell in line.split("|")]
+        cells = [c for c in cells if c]
+        return cells
+
+    def flush_table():
+        """Convert accumulated table rows to bullet points"""
+        nonlocal table_rows, header_row
+        bullets = []
+
+        for row in table_rows:
+            cells = extract_cells(row)
+            if not cells:
+                continue
+            if header_row and cells == header_row:
+                continue
+
+            if len(cells) == 1:
+                bullets.append(f"• {cells[0]}")
+            elif len(cells) == 2:
+                bullets.append(f"• {cells[0]} — {cells[1]}")
+            else:
+                sep = " — "
+                bullets.append(f"• {sep.join(cells)}")
+
+        table_rows = []
+        header_row = None
+        return bullets
+
+    for line in lines:
+        # Skip whitespace-only lines
+        if whitespace_only.match(line):
+            continue
+
+        # Skip decorative/border lines
+        if is_decorative_line(line):
+            if not in_table and table_rows:
+                result.extend(flush_table())
+            in_table = True
+            continue
+
+        if is_table_row(line):
+            in_table = True
+            cells = extract_cells(line)
+            if not table_rows and cells:
+                is_header = all(len(c) < 30 and c and not c[0].isdigit() and c[0] != "#" for c in cells)
+                if is_header:
+                    header_row = cells
+            table_rows.append(line)
+        else:
+            if in_table or table_rows:
+                result.extend(flush_table())
+                in_table = False
+            result.append(line)
+
+    if table_rows:
+        result.extend(flush_table())
+
+    # Remove consecutive empty lines
+    cleaned = []
+    prev_empty = False
+    for line in result:
+        is_empty = not line.strip()
+        if is_empty and prev_empty:
+            continue
+        cleaned.append(line)
+        prev_empty = is_empty
+
+    return "\n".join(cleaned)
+
+text = sys.argv[1] if len(sys.argv) > 1 else ""
+print(format_for_telegram(text))
+' "$input"
+}

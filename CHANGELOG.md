@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- Telegram message formatting: strip ANSI codes, convert tables to bullet points for readability
+- `format_for_telegram()` function in lib/common.sh for terminal output transformation
+
 ### Fixed
 - Fix touchpad scroll cycling through prompt history instead of conversation history
   - Enable tmux mouse mode for claude-remote sessions

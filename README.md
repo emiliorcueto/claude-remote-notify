@@ -89,6 +89,10 @@ Control multiple Claude CLI sessions remotely via Telegram, with each session is
 
 # Force full reinstall
 ./setup-telegram-remote.sh --force
+
+# Development mode: symlinks files instead of copying
+# Changes to project files take effect immediately
+./setup-telegram-remote.sh --dev
 ```
 
 ### 5. Manual Session Config (Alternative)
@@ -458,6 +462,38 @@ After disabling, the bot must be **removed and re-added** to the group for the c
 | Setting shows "disabled" but doesn't work | Remove and re-add bot to group |
 
 > **Note:** "Group Privacy" controls what messages the bot can "hear" - not your data privacy. Messages go through Telegram servers regardless, but the listener runs on your local machine.
+
+## Development
+
+### Setup Modes
+
+| Mode | Command | Behavior |
+|------|---------|----------|
+| **Normal** | `./setup-telegram-remote.sh` | Copies files to `~/.claude/` |
+| **Dev** | `./setup-telegram-remote.sh --dev` | Symlinks files to project |
+| **Force** | `./setup-telegram-remote.sh --force` | Full reinstall |
+
+**Development mode (`--dev`):**
+- Creates symlinks from `~/.claude/hooks/` → project files
+- Changes to project files take effect immediately
+- No need to re-run setup after edits
+- Useful for rapid iteration
+
+**Normal mode (default):**
+- Copies files to `~/.claude/`
+- Must re-run setup to apply changes
+- Works even if project is moved/deleted
+- Recommended for end users
+
+### Running Tests
+
+```bash
+# All tests
+./tests/test_common.sh
+./tests/test_setup.sh
+./tests/test_claude_remote.sh
+python3 -m pytest tests/test_security.py -v
+```
 
 ## Requirements
 
