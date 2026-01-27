@@ -204,6 +204,10 @@ claude-notify off                # Disable notifications
 | `/notify start` | Start listener (if not running) |
 | `/notify kill` | Stop listener |
 | `/notify help` | Show notify help |
+| **Media** | |
+| 📷 Photo | Downloaded, sent as `[Image: /path]` |
+| 📄 Document | Downloaded, sent as `[Document: /path]` |
+| ❌ Voice/Video | Not supported (error message sent) |
 | **Other** | |
 | `(any text)` | Send directly to Claude |
 
@@ -337,6 +341,40 @@ You (in Claude): /remote-preview-output 100
 → Full colors preserved (green diffs, red errors, etc.)
 → Pinch to zoom, scroll through
 ```
+
+## Media Support
+
+Send photos and documents via Telegram to share them with Claude:
+
+```
+📱 Telegram:
+[Send photo of error screenshot]
+
+→ Listener downloads to /tmp/claude-telegram/
+→ Injects: [Image: /tmp/claude-telegram/session-photo_20260127_143022.jpg]
+
+Claude sees the image and can analyze it!
+```
+
+**Supported:**
+- 📷 Photos (all sizes, up to 20MB)
+- 📄 Documents (PDFs, code files, etc.)
+- Captions included with media
+
+**Not Supported:**
+- ❌ Voice messages
+- ❌ Videos
+- ❌ Stickers/GIFs
+- ❌ Audio files
+
+**How it works:**
+1. Send photo/document in your Telegram topic
+2. Listener downloads file to `/tmp/claude-telegram/`
+3. File path injected to Claude as `[Image: /path]` or `[Document: /path]`
+4. Claude can read/analyze the file
+5. Files cleaned up when session exits
+
+> **Note:** Files are stored temporarily in `/tmp/claude-telegram/` and automatically cleaned up when the session ends.
 
 ## Single-Session Mode
 

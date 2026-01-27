@@ -34,6 +34,11 @@ Telegram Commands:
   /notify help       - Notify help
   (any text)         - Sent to Claude
 
+Media Support:
+  Photos             - Downloaded, injected as [Image: /path]
+  Documents          - Downloaded, injected as [Document: /path]
+  Voice/Video/etc    - Not supported (user notified)
+
 =============================================================================
 """
 
@@ -298,6 +303,244 @@ def set_message_reaction(message_id, emoji="👍"):
         return False
 
 # =============================================================================
+# MEDIA HANDLING
+# =============================================================================
+
+MEDIA_TEMP_DIR = Path('/tmp/claude-telegram')
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB Telegram file limit
+DOWNLOAD_TIMEOUT = 60  # seconds
+
+# Unsupported media types with user-friendly messages
+UNSUPPORTED_MEDIA_TYPES = {
+    'voice': 'Voice messages',
+    'video': 'Videos',
+    'video_note': 'Video notes',
+    'audio': 'Audio files',
+    'sticker': 'Stickers',
+    'animation': 'Animations/GIFs',
+}
+
+
+def ensure_media_dir():
+    """Create media temp directory if it doesn't exist."""
+    try:
+        MEDIA_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        return True
+    except Exception as e:
+        log(f"Failed to create media dir: {e}", "ERROR")
+        return False
+
+
+def sanitize_filename(filename):
+    """Remove unsafe characters from filename.
+
+    Allows alphanumeric, underscore, hyphen, and period.
+    Preserves file extension.
+    """
+    if not filename:
+        return "unnamed"
+
+    # Split name and extension
+    if '.' in filename:
+        name, ext = filename.rsplit('.', 1)
+        ext = '.' + re.sub(r'[^a-zA-Z0-9]', '', ext)[:10]  # Sanitize extension
+    else:
+        name = filename
+        ext = ''
+
+    # Sanitize name: keep alphanumeric, underscore, hyphen
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+
+    # Collapse multiple underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+
+    # Ensure non-empty
+    if not sanitized:
+        sanitized = "file"
+
+    # Limit length
+    sanitized = sanitized[:100]
+
+    return sanitized + ext
+
+
+def get_telegram_file(file_id):
+    """Get file path from Telegram using file_id.
+
+    Returns dict with 'file_path' on success, or None on failure.
+    """
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
+    params = {'file_id': file_id}
+
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+
+        if data.get('ok'):
+            return data.get('result', {})
+        else:
+            log(f"getFile API error: {data.get('description', 'Unknown')}", "ERROR")
+            return None
+    except Exception as e:
+        log(f"Error getting file info: {e}", "ERROR")
+        return None
+
+
+def download_telegram_file(file_path, local_path):
+    """Download file from Telegram servers to local path.
+
+    Args:
+        file_path: Telegram file_path from getFile API
+        local_path: Local Path object to save to
+
+    Returns:
+        True on success, False on failure
+    """
+    url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+    try:
+        response = requests.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
+        response.raise_for_status()
+
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        log(f"Downloaded: {local_path}")
+        return True
+    except requests.exceptions.Timeout:
+        log(f"Download timeout for {file_path}", "ERROR")
+        return False
+    except Exception as e:
+        log(f"Error downloading file: {e}", "ERROR")
+        return False
+
+
+def cleanup_media_files():
+    """Remove session-specific media files from temp directory."""
+    if not MEDIA_TEMP_DIR.exists():
+        return
+
+    pattern = f"{SESSION_NAME}-*"
+    try:
+        for f in MEDIA_TEMP_DIR.glob(pattern):
+            try:
+                f.unlink()
+                log(f"Cleaned up: {f}")
+            except Exception as e:
+                log(f"Failed to clean up {f}: {e}", "WARN")
+    except Exception as e:
+        log(f"Error during media cleanup: {e}", "WARN")
+
+
+def handle_media_message(message, message_id):
+    """Handle incoming media message (photo or document).
+
+    Args:
+        message: Telegram message dict
+        message_id: Message ID for reactions
+
+    Returns:
+        tuple: (inject_text, success) where inject_text is the text to send to Claude
+               or error message, and success indicates if media was processed
+    """
+    # Check for unsupported media types first
+    for media_type, description in UNSUPPORTED_MEDIA_TYPES.items():
+        if media_type in message:
+            return (f"{description} not supported. Send photos or documents instead.", False)
+
+    # Handle photos
+    if 'photo' in message:
+        # Get largest photo (last in array)
+        photos = message['photo']
+        if not photos:
+            return ("Empty photo array", False)
+
+        photo = photos[-1]  # Largest size
+        file_id = photo.get('file_id')
+        file_size = photo.get('file_size', 0)
+
+        if file_size > MAX_FILE_SIZE:
+            return (f"Photo too large ({file_size // 1024 // 1024}MB). Max: 20MB", False)
+
+        return _download_and_format(file_id, 'photo', message)
+
+    # Handle documents
+    if 'document' in message:
+        doc = message['document']
+        file_id = doc.get('file_id')
+        file_size = doc.get('file_size', 0)
+        file_name = doc.get('file_name', 'document')
+        mime_type = doc.get('mime_type', '')
+
+        if file_size > MAX_FILE_SIZE:
+            return (f"Document too large ({file_size // 1024 // 1024}MB). Max: 20MB", False)
+
+        return _download_and_format(file_id, 'document', message, file_name, mime_type)
+
+    return ("No media found in message", False)
+
+
+def _download_and_format(file_id, media_type, message, original_filename=None, mime_type=None):
+    """Download media and format inject text.
+
+    Args:
+        file_id: Telegram file_id
+        media_type: 'photo' or 'document'
+        message: Original message dict (for caption)
+        original_filename: Original filename (for documents)
+        mime_type: MIME type (for documents)
+
+    Returns:
+        tuple: (inject_text, success)
+    """
+    # Ensure temp directory exists
+    if not ensure_media_dir():
+        return ("Failed to create media directory", False)
+
+    # Get file info from Telegram
+    file_info = get_telegram_file(file_id)
+    if not file_info:
+        return ("Failed to get file info from Telegram", False)
+
+    telegram_path = file_info.get('file_path')
+    if not telegram_path:
+        return ("No file_path in Telegram response", False)
+
+    # Determine local filename
+    if original_filename:
+        safe_name = sanitize_filename(original_filename)
+    else:
+        # Extract extension from telegram path or use default
+        ext = Path(telegram_path).suffix or '.jpg'
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_name = f"{media_type}_{timestamp}{ext}"
+
+    # Create unique local path with session prefix
+    local_filename = f"{SESSION_NAME}-{safe_name}"
+    local_path = MEDIA_TEMP_DIR / local_filename
+
+    # Download file
+    if not download_telegram_file(telegram_path, local_path):
+        return ("Failed to download file", False)
+
+    # Format inject text
+    caption = message.get('caption', '').strip()
+    if media_type == 'photo':
+        inject_text = f"[Image: {local_path}]"
+    else:
+        inject_text = f"[Document: {local_path}]"
+
+    if caption:
+        inject_text += f" {caption}"
+
+    return (inject_text, True)
+
+
+# =============================================================================
 # TMUX INTERACTION
 # =============================================================================
 
@@ -524,6 +767,10 @@ def handle_command(command, from_user):
             "/notify status - Check notification state\n"
             "/notify config - Show full configuration\n"
             "/notify start|kill - Listener control\n\n"
+            "━━━ Media ━━━\n"
+            "📷 Photos - Downloaded, sent as [Image: /path]\n"
+            "📄 Documents - Downloaded, sent as [Document: /path]\n"
+            "❌ Voice/Video/Stickers - Not supported\n\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "Any other text is sent directly to Claude."
         )
@@ -693,10 +940,34 @@ def run_listener():
                 # Check if we should process this message
                 if not should_process_message(message):
                     continue
-                
-                text = message.get('text', '').strip()
+
                 message_id = message.get('message_id')
                 from_user = message.get('from', {}).get('username', 'unknown')
+
+                # Check for media first (photos, documents, unsupported types)
+                has_media = any(key in message for key in
+                               ['photo', 'document', 'voice', 'video', 'video_note',
+                                'audio', 'sticker', 'animation'])
+
+                if has_media:
+                    log(f"Received media from @{from_user}")
+                    inject_text, success = handle_media_message(message, message_id)
+
+                    if success:
+                        # Media processed successfully - inject to tmux
+                        if inject_to_tmux(inject_text):
+                            set_message_reaction(message_id, "👀")
+                        else:
+                            set_message_reaction(message_id, "😱")
+                            send_message(f"❌ [{SESSION_NAME}] Failed (session not found)")
+                    else:
+                        # Media handling failed - send error message
+                        set_message_reaction(message_id, "😱")
+                        send_message(f"❌ [{SESSION_NAME}] {inject_text}")
+                    continue
+
+                # Handle text messages
+                text = message.get('text', '').strip()
 
                 if not text:
                     continue
@@ -771,6 +1042,7 @@ def main():
     # Signal handlers
     def signal_handler(signum, frame):
         log("Shutdown signal received")
+        cleanup_media_files()
         remove_pid()
         sys.exit(0)
     
