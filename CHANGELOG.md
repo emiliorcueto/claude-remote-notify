@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- Multi-session Telegram listener (Issue #22)
+  - Single listener process polls Telegram once, routes by topic ID
+  - Eliminates "terminated by other getUpdates request" API conflicts
+  - Per-session pause state (`/notify stop`/`start`)
+  - Hot-reload of session configs (60s scan interval)
+  - Graceful cleanup when sessions are removed
+  - New `--list` flag to show configured sessions
+  - Backwards compatible `--session` flag for single-session mode
 - Photo and document support via Telegram (Issue #1)
   - Photos downloaded and injected as `[Image: /path]`
   - Documents downloaded and injected as `[Document: /path]`

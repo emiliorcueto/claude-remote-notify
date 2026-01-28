@@ -51,8 +51,10 @@ import argparse
 import re
 import shlex
 import unicodedata
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, Optional, List
 
 try:
     import requests
@@ -61,18 +63,251 @@ except ImportError:
     print("Install with: pip install --user requests")
     sys.exit(1)
 
+
+# =============================================================================
+# MULTI-SESSION DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class SessionState:
+    """Per-session configuration and runtime state."""
+    name: str
+    topic_id: str
+    tmux_session: str
+    chat_id: str
+    bot_token: str
+    paused: bool = False
+    config_path: Optional[Path] = None
+    config_mtime: float = 0
+
+
+class SessionManager:
+    """Central manager for all configured sessions."""
+
+    def __init__(self, claude_home: Path):
+        self.claude_home = claude_home
+        self.sessions_dir = claude_home / 'sessions'
+        self.sessions: Dict[str, SessionState] = {}  # topic_id -> session
+        self.bot_token: Optional[str] = None
+        self.chat_id: Optional[str] = None
+        self.last_scan_time: float = 0
+
+    def scan_configs(self) -> bool:
+        """Scan ~/.claude/sessions/*.conf, validate, populate sessions dict.
+
+        Returns True if at least one valid session was found.
+
+        Validation rules:
+        - All sessions must have same TELEGRAM_BOT_TOKEN
+        - All sessions must have same TELEGRAM_CHAT_ID
+        - Topic IDs must be unique across sessions
+        - Config files must be user-owned, not world-writable
+        """
+        if not self.sessions_dir.exists():
+            return False
+
+        new_sessions: Dict[str, SessionState] = {}
+        found_bot_token: Optional[str] = None
+        found_chat_id: Optional[str] = None
+        seen_topics: set = set()
+
+        for config_file in sorted(self.sessions_dir.glob('*.conf')):
+            try:
+                # Security check: file ownership and permissions
+                stat_info = config_file.stat()
+                if stat_info.st_uid not in (os.getuid(), 0):
+                    log_multi(f"Skipping {config_file.name}: not owned by current user", "WARN")
+                    continue
+                if stat_info.st_mode & 0o002:
+                    log_multi(f"Skipping {config_file.name}: world-writable", "WARN")
+                    continue
+
+                config = load_session_config(config_file)
+                if not config:
+                    continue
+
+                bot_token = config.get('TELEGRAM_BOT_TOKEN', '')
+                chat_id = config.get('TELEGRAM_CHAT_ID', '')
+                topic_id = config.get('TELEGRAM_TOPIC_ID', '')
+                session_name = config_file.stem  # filename without .conf
+
+                # Validate required fields
+                if not bot_token or not chat_id:
+                    log_multi(f"Skipping {session_name}: missing bot token or chat ID", "WARN")
+                    continue
+
+                if not topic_id:
+                    log_multi(f"Skipping {session_name}: no topic ID (required for multi-session)", "WARN")
+                    continue
+
+                # Validate same bot token across all sessions
+                if found_bot_token is None:
+                    found_bot_token = bot_token
+                elif bot_token != found_bot_token:
+                    log_multi(f"Skipping {session_name}: different bot token", "WARN")
+                    continue
+
+                # Validate same chat ID across all sessions
+                if found_chat_id is None:
+                    found_chat_id = chat_id
+                elif chat_id != found_chat_id:
+                    log_multi(f"Skipping {session_name}: different chat ID", "WARN")
+                    continue
+
+                # Validate unique topic ID
+                if topic_id in seen_topics:
+                    log_multi(f"Skipping {session_name}: duplicate topic ID {topic_id}", "WARN")
+                    continue
+                seen_topics.add(topic_id)
+
+                # Get tmux session name
+                tmux_session = config.get('TMUX_SESSION', f'claude-{session_name}')
+
+                # Check if we already have this session (preserve pause state)
+                existing = self.sessions.get(topic_id)
+                paused = existing.paused if existing else False
+
+                new_sessions[topic_id] = SessionState(
+                    name=session_name,
+                    topic_id=topic_id,
+                    tmux_session=tmux_session,
+                    chat_id=chat_id,
+                    bot_token=bot_token,
+                    paused=paused,
+                    config_path=config_file,
+                    config_mtime=stat_info.st_mtime
+                )
+
+            except Exception as e:
+                log_multi(f"Error loading {config_file}: {e}", "ERROR")
+                continue
+
+        # Detect removed sessions and clean up
+        removed = set(self.sessions.keys()) - set(new_sessions.keys())
+        for topic_id in removed:
+            session = self.sessions[topic_id]
+            log_multi(f"Session removed: {session.name}")
+            cleanup_media_files_for_session(session.name)
+
+        # Update state
+        self.sessions = new_sessions
+        self.bot_token = found_bot_token
+        self.chat_id = found_chat_id
+        self.last_scan_time = time.time()
+
+        if new_sessions:
+            log_multi(f"Loaded {len(new_sessions)} session(s): {', '.join(s.name for s in new_sessions.values())}")
+
+        return len(new_sessions) > 0
+
+    def get_session_by_topic(self, topic_id: str) -> Optional[SessionState]:
+        """Get session by topic ID."""
+        return self.sessions.get(topic_id)
+
+    def set_paused(self, session_name: str, paused: bool) -> bool:
+        """Update pause state for a session by name."""
+        for session in self.sessions.values():
+            if session.name == session_name:
+                session.paused = paused
+                return True
+        return False
+
+    def get_session_by_name(self, name: str) -> Optional[SessionState]:
+        """Get session by name."""
+        for session in self.sessions.values():
+            if session.name == name:
+                return session
+        return None
+
+
+def load_session_config(config_path: Path) -> Dict[str, str]:
+    """Load single session config file, return dict of key=value pairs."""
+    config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    value = value.strip().strip('"').strip("'")
+                    config[key.strip()] = value
+    return config
+
+
+def log_multi(message: str, level: str = "INFO"):
+    """Log message for multi-session listener."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_line = f"[{timestamp}] [multi] [{level}] {message}"
+    print(log_line)
+
+    try:
+        log_file = CLAUDE_HOME / 'logs' / 'listener-multi.log'
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, 'a') as f:
+            f.write(log_line + '\n')
+    except Exception:
+        pass
+
+
+def cleanup_media_files_for_session(session_name: str):
+    """Remove media files for a specific session."""
+    media_dir = Path('/tmp/claude-telegram')
+    if not media_dir.exists():
+        return
+
+    pattern = f"{session_name}-*"
+    try:
+        for f in media_dir.glob(pattern):
+            try:
+                f.unlink()
+                log_multi(f"Cleaned up: {f}")
+            except Exception as e:
+                log_multi(f"Failed to clean up {f}: {e}", "WARN")
+    except Exception as e:
+        log_multi(f"Error during media cleanup: {e}", "WARN")
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Telegram listener for Claude sessions')
-    parser.add_argument('--session', '-s', default=os.environ.get('CLAUDE_SESSION', 'default'),
-                        help='Session name (default: "default" or CLAUDE_SESSION env)')
+    parser = argparse.ArgumentParser(
+        description='Telegram listener for Claude sessions',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Modes:
+  Multi-session (default):
+    telegram-listener.py
+    - Polls Telegram once, routes to all sessions by topic ID
+    - Requires ~/.claude/sessions/*.conf with TELEGRAM_TOPIC_ID
+
+  Single-session (legacy):
+    telegram-listener.py --session NAME
+    - One listener per session (may cause API conflicts with multiple)
+
+  List sessions:
+    telegram-listener.py --list
+"""
+    )
+    parser.add_argument('--session', '-s', default=None,
+                        help='Run in single-session mode for NAME (legacy)')
+    parser.add_argument('--list', '-l', action='store_true',
+                        help='List all configured sessions and exit')
+    parser.add_argument('--multi', '-m', action='store_true',
+                        help='Force multi-session mode (default when no --session)')
     return parser.parse_args()
 
-args = parse_args()
-SESSION_NAME = args.session
+
+# Only parse args when run as main script (not when imported)
+if __name__ == '__main__':
+    args = parse_args()
+    MULTI_SESSION_MODE = args.multi or (args.session is None and not args.list)
+    SESSION_NAME = args.session or os.environ.get('CLAUDE_SESSION', 'default')
+else:
+    # Default values for imports/testing
+    args = None
+    MULTI_SESSION_MODE = False
+    SESSION_NAME = os.environ.get('CLAUDE_SESSION', 'default')
 
 CLAUDE_HOME = Path(os.environ.get('CLAUDE_HOME', Path.home() / '.claude'))
 SESSIONS_DIR = CLAUDE_HOME / 'sessions'
@@ -322,6 +557,183 @@ def set_message_reaction(message_id, emoji="👍"):
     except Exception as e:
         log(f"Error setting reaction: {e}", "ERROR")
         return False
+
+
+# =============================================================================
+# MULTI-SESSION TELEGRAM API (session-aware)
+# =============================================================================
+
+def get_updates_multi(offset: Optional[int], bot_token: str) -> list:
+    """Get updates from Telegram using long polling (multi-session version)."""
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params = {
+        'timeout': POLL_TIMEOUT,
+        'allowed_updates': ['message']
+    }
+    if offset:
+        params['offset'] = offset
+
+    try:
+        response = requests.get(url, params=params, timeout=POLL_TIMEOUT + 10)
+        data = response.json()
+
+        if data.get('ok'):
+            return data.get('result', [])
+        else:
+            log_multi(f"API error: {data.get('description', 'Unknown')}", "ERROR")
+            return []
+    except requests.exceptions.Timeout:
+        return []
+    except requests.exceptions.ConnectionError:
+        log_multi("Connection error - will retry", "WARN")
+        return []
+    except Exception as e:
+        log_multi(f"Error getting updates: {e}", "ERROR")
+        return []
+
+
+def send_message_session(session: SessionState, text: str, parse_mode: Optional[str] = None):
+    """Send a message to Telegram for a specific session."""
+    url = f"https://api.telegram.org/bot{session.bot_token}/sendMessage"
+    data = {
+        'chat_id': session.chat_id,
+        'text': text
+    }
+
+    if session.topic_id:
+        data['message_thread_id'] = session.topic_id
+
+    if parse_mode:
+        data['parse_mode'] = parse_mode
+
+    try:
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        log_multi(f"[{session.name}] Error sending message: {e}", "ERROR")
+
+
+def send_document_session(session: SessionState, filepath: str, caption: str = ""):
+    """Send a document to Telegram for a specific session."""
+    url = f"https://api.telegram.org/bot{session.bot_token}/sendDocument"
+    data = {
+        'chat_id': session.chat_id,
+        'caption': caption
+    }
+
+    if session.topic_id:
+        data['message_thread_id'] = session.topic_id
+
+    try:
+        with open(filepath, 'rb') as f:
+            requests.post(url, data=data, files={'document': f}, timeout=30)
+    except Exception as e:
+        log_multi(f"[{session.name}] Error sending document: {e}", "ERROR")
+
+
+def set_message_reaction_session(session: SessionState, message_id: int, emoji: str = "👍") -> bool:
+    """Set a reaction emoji on a message for a specific session."""
+    url = f"https://api.telegram.org/bot{session.bot_token}/setMessageReaction"
+    data = {
+        'chat_id': session.chat_id,
+        'message_id': message_id,
+    }
+
+    if emoji:
+        data['reaction'] = [{'type': 'emoji', 'emoji': emoji}]
+    else:
+        data['reaction'] = []
+
+    try:
+        response = requests.post(url, json=data, timeout=10)
+        result = response.json()
+        if not result.get('ok'):
+            log_multi(f"[{session.name}] Reaction failed: {result.get('description', 'Unknown error')}", "WARN")
+            return False
+        return True
+    except Exception as e:
+        log_multi(f"[{session.name}] Error setting reaction: {e}", "ERROR")
+        return False
+
+
+def get_safe_env_session(session: SessionState) -> Dict[str, str]:
+    """Return environment dict with only safe variables plus session-specific ones."""
+    env = {k: v for k, v in os.environ.items() if k in SAFE_ENV_VARS}
+    env['CLAUDE_SESSION'] = session.name
+    env['TMUX_SESSION'] = session.tmux_session
+    env['CLAUDE_HOME'] = str(CLAUDE_HOME)
+    return env
+
+
+def log_session(session: SessionState, message: str, level: str = "INFO"):
+    """Log message for a specific session (writes to multi log)."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_line = f"[{timestamp}] [{session.name}] [{level}] {message}"
+    print(log_line)
+
+    try:
+        log_file = CLAUDE_HOME / 'logs' / 'listener-multi.log'
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, 'a') as f:
+            f.write(log_line + '\n')
+    except Exception:
+        pass
+
+
+def tmux_session_exists_for(tmux_name: str) -> bool:
+    """Check if a specific tmux session exists."""
+    result = subprocess.run(
+        ['tmux', 'has-session', '-t', tmux_name],
+        capture_output=True
+    )
+    return result.returncode == 0
+
+
+def inject_to_tmux_session(session: SessionState, text: str) -> bool:
+    """Inject text into a specific tmux session as keyboard input."""
+    if not tmux_session_exists_for(session.tmux_session):
+        log_session(session, f"tmux session '{session.tmux_session}' not found", "WARN")
+        return False
+
+    # Sanitize input
+    sanitized_text = sanitize_tmux_input(text)
+    if not sanitized_text:
+        log_session(session, "Input was empty after sanitization", "WARN")
+        return False
+
+    try:
+        subprocess.run(
+            ['tmux', 'send-keys', '-t', session.tmux_session, '-l', '--', sanitized_text],
+            check=True,
+            capture_output=True
+        )
+        subprocess.run(
+            ['tmux', 'send-keys', '-t', session.tmux_session, 'Enter'],
+            check=True,
+            capture_output=True
+        )
+
+        log_session(session, f"Injected: {text[:50]}{'...' if len(text) > 50 else ''}")
+        return True
+    except subprocess.CalledProcessError as e:
+        log_session(session, f"Error injecting: {e}", "ERROR")
+        return False
+
+
+def get_tmux_snapshot_session(session: SessionState, lines: int = 10) -> str:
+    """Get current terminal content for a session."""
+    if not tmux_session_exists_for(session.tmux_session):
+        return "Session not running"
+
+    try:
+        result = subprocess.run(
+            ['tmux', 'capture-pane', '-t', session.tmux_session, '-p', '-S', f'-{lines}'],
+            capture_output=True,
+            text=True
+        )
+        return result.stdout.strip() or "(empty)"
+    except Exception:
+        return "Could not capture"
+
 
 # =============================================================================
 # MEDIA HANDLING
@@ -952,6 +1364,570 @@ def handle_command(command, from_user, message_id=None):
 
 MAX_RESTART_ATTEMPTS = 3
 RESTART_DELAY_BASE = 5  # seconds
+CONFIG_RESCAN_INTERVAL = 60  # seconds
+
+
+# =============================================================================
+# MULTI-SESSION COMMAND HANDLER
+# =============================================================================
+
+def run_script_session(session: SessionState, script_path: str, args: str = "") -> str:
+    """Run a hook script securely for a specific session."""
+    try:
+        validated_path = validate_script_path(script_path)
+        cmd = [str(validated_path)]
+        if args:
+            cmd.extend(shlex.split(args))
+
+        result = subprocess.run(
+            cmd,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=get_safe_env_session(session)
+        )
+        output = result.stdout + result.stderr
+        return output.strip() if output.strip() else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "Error: Script timed out after 60 seconds"
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error running script: {e}"
+
+
+def handle_command_session(command: str, from_user: str, message_id: int,
+                           session: SessionState, manager: SessionManager) -> bool:
+    """Handle bot commands for a specific session (multi-session mode)."""
+    parts = command.strip().split()
+    cmd = parts[0].lower()
+    args = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+    # -------------------------------------------------------------------------
+    # /status - Session status
+    # -------------------------------------------------------------------------
+    if cmd == '/status':
+        session_status = "✅ Running" if tmux_session_exists_for(session.tmux_session) else "❌ Not running"
+        snapshot = get_tmux_snapshot_session(session, 15)
+        paused_info = " (PAUSED)" if session.paused else ""
+
+        send_message_session(session,
+            f"📊 [{session.name}] Status{paused_info}\n\n"
+            f"Session: {session.tmux_session}\n"
+            f"Status: {session_status}\n"
+            f"Topic ID: {session.topic_id}\n\n"
+            f"Recent output:\n{snapshot[-800:]}"
+        )
+        return True
+
+    # -------------------------------------------------------------------------
+    # /ping - Connectivity test
+    # -------------------------------------------------------------------------
+    elif cmd == '/ping':
+        send_message_session(session, f"🏓 [{session.name}] Pong! Multi-session listener active.")
+        return True
+
+    # -------------------------------------------------------------------------
+    # /help - Show all commands
+    # -------------------------------------------------------------------------
+    elif cmd == '/help':
+        send_message_session(session,
+            f"🤖 [{session.name}] Telegram Commands\n\n"
+            "━━━ Status ━━━\n"
+            "/status - Session status + recent output\n"
+            "/ping - Test listener connectivity\n"
+            "/help - Show this help\n\n"
+            "━━━ Context ━━━\n"
+            "/clear - Clear Claude context\n"
+            "/compact - Compact Claude context\n\n"
+            "━━━ Preview ━━━\n"
+            "/preview - Send last 50 lines (with colors)\n"
+            "/preview N - Send last N lines\n"
+            "/preview back N - Send Nth previous exchange\n"
+            "/preview help - Show preview help\n"
+            "/output - Alias for /preview\n\n"
+            "━━━ Notifications ━━━\n"
+            "/notify - Show notify help\n"
+            "/notify on|off - Toggle notifications (global)\n"
+            "/notify status - Check notification state\n"
+            "/notify config - Show full configuration\n"
+            "/notify start|stop - Pause/resume THIS session\n\n"
+            "━━━ Media ━━━\n"
+            "📷 Photos - Downloaded, sent as [Image: /path]\n"
+            "📄 Documents - Downloaded, sent as [Document: /path]\n"
+            "❌ Voice/Video/Stickers - Not supported\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Any other text is sent directly to Claude."
+        )
+        return True
+
+    # -------------------------------------------------------------------------
+    # /clear - Clear Claude context
+    # -------------------------------------------------------------------------
+    elif cmd == '/clear':
+        if not tmux_session_exists_for(session.tmux_session):
+            send_message_session(session, f"❌ [{session.name}] tmux session not found")
+            return True
+
+        send_message_session(session, f"🧹 [{session.name}] Clearing context...")
+        if inject_to_tmux_session(session, '/clear'):
+            log_session(session, "Clear command sent to Claude")
+        else:
+            send_message_session(session, f"❌ [{session.name}] Failed to send clear command")
+        return True
+
+    # -------------------------------------------------------------------------
+    # /compact - Compact Claude context
+    # -------------------------------------------------------------------------
+    elif cmd == '/compact':
+        if not tmux_session_exists_for(session.tmux_session):
+            send_message_session(session, f"❌ [{session.name}] tmux session not found")
+            return True
+
+        send_message_session(session, f"📦 [{session.name}] Compacting context...")
+        if inject_to_tmux_session(session, '/compact'):
+            log_session(session, "Compact command sent to Claude")
+        else:
+            send_message_session(session, f"❌ [{session.name}] Failed to send compact command")
+        return True
+
+    # -------------------------------------------------------------------------
+    # /preview - Terminal output preview
+    # -------------------------------------------------------------------------
+    elif cmd == '/preview':
+        script = CLAUDE_HOME / 'hooks' / 'telegram-preview.sh'
+
+        if not script.exists():
+            send_message_session(session, f"❌ [{session.name}] Preview script not found")
+            return True
+
+        if args.lower() == 'help':
+            output = run_script_session(session, str(script), 'help')
+            send_message_session(session, f"📺 [{session.name}] Preview Help\n\n{output[:3500]}")
+            return True
+
+        send_message_session(session, f"📺 [{session.name}] Generating preview...")
+        output = run_script_session(session, str(script), args)
+
+        if 'Error' in output or 'error' in output.lower():
+            if message_id:
+                set_message_reaction_session(session, message_id, "😱")
+            send_message_session(session, f"⚠️ [{session.name}] {output[:1000]}")
+        else:
+            if message_id:
+                set_message_reaction_session(session, message_id, "👀")
+
+        return True
+
+    # -------------------------------------------------------------------------
+    # /notify - Notification control
+    # -------------------------------------------------------------------------
+    elif cmd == '/notify':
+        script = CLAUDE_HOME / 'hooks' / 'remote-notify.sh'
+
+        if not script.exists():
+            send_message_session(session, f"❌ [{session.name}] Notify script not found")
+            return True
+
+        valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'stop', 'help']
+        subcmd = args.split()[0].lower() if args else 'help'
+
+        if subcmd not in valid_subcmds:
+            send_message_session(session,
+                f"❌ [{session.name}] Unknown subcommand: {subcmd}\n\n"
+                f"Valid: {', '.join(valid_subcmds)}\n"
+                "Try: /notify help"
+            )
+            return True
+
+        # Handle on/off - global notification flag
+        if subcmd == 'on':
+            notify_flag = CLAUDE_HOME / 'notifications-enabled'
+            try:
+                notify_flag.touch()
+                log_session(session, f"Notifications enabled (flag: {notify_flag})")
+                send_message_session(session, f"🔔 [{session.name}] Notifications enabled (global)")
+            except Exception as e:
+                log_session(session, f"Failed to enable notifications: {e}", "ERROR")
+                send_message_session(session, f"❌ [{session.name}] Failed to enable notifications: {e}")
+            return True
+
+        if subcmd == 'off':
+            notify_flag = CLAUDE_HOME / 'notifications-enabled'
+            try:
+                notify_flag.unlink(missing_ok=True)
+                log_session(session, f"Notifications disabled (flag: {notify_flag})")
+                send_message_session(session, f"🔕 [{session.name}] Notifications disabled (global)")
+            except Exception as e:
+                log_session(session, f"Failed to disable notifications: {e}", "ERROR")
+                send_message_session(session, f"❌ [{session.name}] Failed to disable notifications: {e}")
+            return True
+
+        # Handle stop - pause THIS session only
+        if subcmd == 'stop':
+            session.paused = True
+            log_session(session, "Stop command received - session paused")
+            send_message_session(session, f"⏸️ [{session.name}] Session paused. Send /notify start to resume.")
+            return True
+
+        # Handle start - resume THIS session
+        if subcmd == 'start':
+            if not session.paused:
+                send_message_session(session, f"✅ [{session.name}] Session already running")
+            else:
+                session.paused = False
+                log_session(session, "Start command received - session resumed")
+                send_message_session(session, f"▶️ [{session.name}] Session resumed")
+            return True
+
+        output = run_script_session(session, str(script), subcmd)
+        output = re.sub(r'\x1b\[[0-9;]*m', '', output)
+
+        if subcmd == 'help':
+            send_message_session(session, f"🔔 [{session.name}] Notify Help\n\n{output[:3500]}")
+        else:
+            send_message_session(session, f"🔔 [{session.name}] {subcmd.title()}\n\n{output[:2000]}")
+
+        return True
+
+    # -------------------------------------------------------------------------
+    # /output - Alias for /preview
+    # -------------------------------------------------------------------------
+    elif cmd == '/output':
+        return handle_command_session(f'/preview {args}', from_user, message_id, session, manager)
+
+    return False
+
+
+def handle_media_message_session(message: dict, message_id: int, session: SessionState):
+    """Handle incoming media message for a specific session.
+
+    Returns tuple: (inject_text, success)
+    """
+    # Check for unsupported media types first
+    for media_type, description in UNSUPPORTED_MEDIA_TYPES.items():
+        if media_type in message:
+            return (f"{description} not supported. Send photos or documents instead.", False)
+
+    # Handle photos
+    if 'photo' in message:
+        photos = message['photo']
+        if not photos:
+            return ("Empty photo array", False)
+
+        photo = photos[-1]
+        file_id = photo.get('file_id')
+        file_size = photo.get('file_size', 0)
+
+        if file_size > MAX_FILE_SIZE:
+            return (f"Photo too large ({file_size // 1024 // 1024}MB). Max: 20MB", False)
+
+        return _download_and_format_session(file_id, 'photo', message, session)
+
+    # Handle documents
+    if 'document' in message:
+        doc = message['document']
+        file_id = doc.get('file_id')
+        file_size = doc.get('file_size', 0)
+        file_name = doc.get('file_name', 'document')
+
+        if file_size > MAX_FILE_SIZE:
+            return (f"Document too large ({file_size // 1024 // 1024}MB). Max: 20MB", False)
+
+        return _download_and_format_session(file_id, 'document', message, session, file_name)
+
+    return ("No media found in message", False)
+
+
+def _download_and_format_session(file_id: str, media_type: str, message: dict,
+                                 session: SessionState, original_filename: str = None):
+    """Download media and format inject text for a session."""
+    if not ensure_media_dir():
+        return ("Failed to create media directory", False)
+
+    file_info = get_telegram_file_session(file_id, session.bot_token)
+    if not file_info:
+        return ("Failed to get file info from Telegram", False)
+
+    telegram_path = file_info.get('file_path')
+    if not telegram_path:
+        return ("No file_path in Telegram response", False)
+
+    if original_filename:
+        safe_name = sanitize_filename(original_filename)
+    else:
+        ext = Path(telegram_path).suffix or '.jpg'
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_name = f"{media_type}_{timestamp}{ext}"
+
+    local_filename = f"{session.name}-{safe_name}"
+    local_path = MEDIA_TEMP_DIR / local_filename
+
+    if not download_telegram_file_session(telegram_path, local_path, session.bot_token):
+        return ("Failed to download file", False)
+
+    caption = message.get('caption', '').strip()
+    if media_type == 'photo':
+        inject_text = f"[Image: {local_path}]"
+    else:
+        inject_text = f"[Document: {local_path}]"
+
+    if caption:
+        inject_text += f" {caption}"
+
+    return (inject_text, True)
+
+
+def get_telegram_file_session(file_id: str, bot_token: str) -> Optional[dict]:
+    """Get file path from Telegram using file_id (session-aware)."""
+    url = f"https://api.telegram.org/bot{bot_token}/getFile"
+    params = {'file_id': file_id}
+
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+
+        if data.get('ok'):
+            return data.get('result', {})
+        else:
+            log_multi(f"getFile API error: {data.get('description', 'Unknown')}", "ERROR")
+            return None
+    except Exception as e:
+        log_multi(f"Error getting file info: {e}", "ERROR")
+        return None
+
+
+def download_telegram_file_session(file_path: str, local_path: Path, bot_token: str) -> bool:
+    """Download file from Telegram servers (session-aware)."""
+    url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+
+    try:
+        response = requests.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
+        response.raise_for_status()
+
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        log_multi(f"Downloaded: {local_path}")
+        return True
+    except requests.exceptions.Timeout:
+        log_multi(f"Download timeout for {file_path}", "ERROR")
+        return False
+    except Exception as e:
+        log_multi(f"Error downloading file: {e}", "ERROR")
+        return False
+
+
+# =============================================================================
+# MULTI-SESSION MAIN LOOP
+# =============================================================================
+
+def run_multi_session():
+    """Main loop for multi-session mode."""
+    manager = SessionManager(CLAUDE_HOME)
+
+    if not manager.scan_configs():
+        log_multi("No valid sessions found", "ERROR")
+        sys.exit(1)
+
+    offset = None
+    error_count = 0
+
+    log_multi("Listening for messages (multi-session mode)...")
+
+    while True:
+        try:
+            # Periodic config rescan (every 60s)
+            if time.time() - manager.last_scan_time > CONFIG_RESCAN_INTERVAL:
+                log_multi("Rescanning session configs...")
+                manager.scan_configs()
+
+            updates = get_updates_multi(offset, manager.bot_token)
+            error_count = 0
+
+            for update in updates:
+                offset = update['update_id'] + 1
+                message = update.get('message', {})
+
+                # Get topic ID from message
+                topic_id = str(message.get('message_thread_id', ''))
+                if not topic_id:
+                    # Ignore messages without topic ID in multi-session mode
+                    continue
+
+                # Route to session
+                session = manager.get_session_by_topic(topic_id)
+                if not session:
+                    # Unknown topic - ignore
+                    continue
+
+                # Verify chat ID matches
+                from_chat = str(message.get('chat', {}).get('id', ''))
+                if from_chat != session.chat_id:
+                    continue
+
+                message_id = message.get('message_id')
+                from_user = message.get('from', {}).get('username', 'unknown')
+                text = message.get('text', '').strip()
+
+                # When paused, only respond to /notify start
+                if session.paused:
+                    if text.lower() == '/notify start':
+                        handle_command_session(text, from_user, message_id, session, manager)
+                    continue
+
+                # Check for media
+                has_media = any(key in message for key in
+                               ['photo', 'document', 'voice', 'video', 'video_note',
+                                'audio', 'sticker', 'animation'])
+
+                if has_media:
+                    log_session(session, f"Received media from @{from_user}")
+                    inject_text, success = handle_media_message_session(message, message_id, session)
+
+                    if success:
+                        if inject_to_tmux_session(session, inject_text):
+                            set_message_reaction_session(session, message_id, "👀")
+                        else:
+                            set_message_reaction_session(session, message_id, "😱")
+                            send_message_session(session, f"❌ [{session.name}] Failed (session not found)")
+                    else:
+                        set_message_reaction_session(session, message_id, "😱")
+                        send_message_session(session, f"❌ [{session.name}] {inject_text}")
+                    continue
+
+                if not text:
+                    continue
+
+                log_session(session, f"Received from @{from_user}: {text[:50]}...")
+
+                # Handle commands
+                if text.startswith('/'):
+                    if handle_command_session(text, from_user, message_id, session, manager):
+                        continue
+
+                # Inject into tmux
+                if inject_to_tmux_session(session, text):
+                    set_message_reaction_session(session, message_id, "👀")
+                else:
+                    set_message_reaction_session(session, message_id, "😱")
+                    send_message_session(session, f"❌ [{session.name}] Failed (session not found)")
+
+            if not updates:
+                time.sleep(0.5)
+
+        except KeyboardInterrupt:
+            log_multi("Interrupted by user")
+            return False
+        except Exception as e:
+            error_count += 1
+            log_multi(f"Error in main loop: {e}", "ERROR")
+
+            if error_count > 10:
+                log_multi("Too many consecutive errors, triggering restart", "ERROR")
+                return True
+
+            wait_time = min(60, 2 ** error_count)
+            log_multi(f"Waiting {wait_time}s before retry...", "WARN")
+            time.sleep(wait_time)
+
+    return False
+
+
+def main_multi():
+    """Entry point for multi-session mode."""
+    log_multi("=" * 60)
+    log_multi("Multi-Session Telegram Listener Starting")
+    log_multi("=" * 60)
+
+    # Write PID file for multi-session mode
+    pid_file = CLAUDE_HOME / 'pids' / 'listener-multi.pid'
+    try:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(pid_file, 'w') as f:
+            f.write(str(os.getpid()))
+        log_multi(f"PID file: {pid_file}")
+    except Exception as e:
+        log_multi(f"Could not write PID file: {e}", "WARN")
+
+    # Signal handlers
+    def signal_handler(signum, frame):
+        log_multi("Shutdown signal received")
+        # Clean up all session media
+        media_dir = Path('/tmp/claude-telegram')
+        if media_dir.exists():
+            try:
+                for f in media_dir.glob('*'):
+                    f.unlink()
+            except Exception:
+                pass
+        # Remove PID file
+        try:
+            pid_file.unlink()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Main loop with restart logic
+    restart_attempt = 0
+
+    while restart_attempt < MAX_RESTART_ATTEMPTS:
+        try:
+            should_restart = run_multi_session()
+
+            if not should_restart:
+                break
+
+            restart_attempt += 1
+            delay = RESTART_DELAY_BASE * (2 ** (restart_attempt - 1))
+
+            log_multi(f"Restarting in {delay}s (attempt {restart_attempt}/{MAX_RESTART_ATTEMPTS})...", "WARN")
+            time.sleep(delay)
+            log_multi("Restarting listener...", "INFO")
+
+        except Exception as e:
+            restart_attempt += 1
+            log_multi(f"Fatal error: {e}", "ERROR")
+
+            if restart_attempt >= MAX_RESTART_ATTEMPTS:
+                break
+
+            delay = RESTART_DELAY_BASE * (2 ** (restart_attempt - 1))
+            time.sleep(delay)
+
+    if restart_attempt >= MAX_RESTART_ATTEMPTS:
+        log_multi(f"Giving up after {MAX_RESTART_ATTEMPTS} restart attempts", "ERROR")
+
+    try:
+        pid_file.unlink()
+    except Exception:
+        pass
+    log_multi("Multi-session listener stopped")
+
+
+def list_sessions():
+    """List all configured sessions."""
+    manager = SessionManager(CLAUDE_HOME)
+    manager.scan_configs()
+
+    if not manager.sessions:
+        print("No sessions configured.")
+        print(f"Add session configs to: {manager.sessions_dir}/")
+        return
+
+    print(f"Configured sessions ({len(manager.sessions)}):\n")
+    for session in sorted(manager.sessions.values(), key=lambda s: s.name):
+        print(f"  {session.name}")
+        print(f"    Topic ID: {session.topic_id}")
+        print(f"    tmux: {session.tmux_session}")
+        print(f"    Config: {session.config_path}")
+        print()
+
 
 def notify_crash(attempt, max_attempts, error_msg):
     """Send notification about listener crash"""
@@ -1142,4 +2118,9 @@ def main():
     log("Listener stopped")
 
 if __name__ == '__main__':
-    main()
+    if args.list:
+        list_sessions()
+    elif MULTI_SESSION_MODE:
+        main_multi()
+    else:
+        main()
