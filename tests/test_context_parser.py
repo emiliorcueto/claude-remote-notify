@@ -87,6 +87,18 @@ class TestClassifyLine:
     def test_option_bracket(self):
         assert classify_line('(1) First option') == OPTION
 
+    def test_option_with_ascii_cursor(self):
+        """ASCII > cursor prefix (selected option)."""
+        assert classify_line('> 1. Yes (Recommended)') == OPTION
+
+    def test_option_with_unicode_cursor_heavy_angle(self):
+        """Unicode ❯ (U+276F) cursor prefix used by some CLI tools."""
+        assert classify_line('\u276f 1. Yes (Recommended)') == OPTION
+
+    def test_option_with_unicode_cursor_angle_quote(self):
+        """Unicode › (U+203A) cursor prefix."""
+        assert classify_line('\u203a 1. Yes (Recommended)') == OPTION
+
     def test_diff_plus(self):
         assert classify_line('+added line') == DIFF
 
@@ -161,6 +173,14 @@ class TestExtractNotificationContext:
 
     def test_options_preserved(self):
         text = "Choose:\n1. Option A\n2. Option B\n3. Option C\n> "
+        result = extract_notification_context(text)
+        assert '1. Option A' in result
+        assert '2. Option B' in result
+        assert '3. Option C' in result
+
+    def test_options_with_unicode_cursor(self):
+        """Option with ❯ cursor prefix should still be extracted."""
+        text = "Choose:\n\u276f 1. Option A\n  2. Option B\n  3. Option C\n> "
         result = extract_notification_context(text)
         assert '1. Option A' in result
         assert '2. Option B' in result

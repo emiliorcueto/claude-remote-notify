@@ -69,8 +69,9 @@ except ImportError:
 # =============================================================================
 
 # Regex for detecting numbered options in terminal output
+# [>\u276f\u203a] matches ASCII > and Unicode cursor chars (❯ ›) used by CLI tools
 OPTION_PATTERN = re.compile(
-    r'^\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$',
+    r'^\s*[>\u276f\u203a]?\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$',
     re.MULTILINE
 )
 
@@ -693,6 +694,28 @@ def answer_callback_query_session(session: SessionState, callback_query_id: str,
         requests.post(url, data=data, timeout=10)
     except Exception as e:
         log_session(session, f"Error answering callback: {e}", "ERROR")
+
+
+def confirm_button_selection(bot_token: str, chat_id: str, message_id: int,
+                             original_text: str, selected_label: str):
+    """Edit the notification message to confirm which option was selected.
+
+    Removes the inline keyboard and appends a confirmation line.
+    """
+    confirmed_text = f"{original_text}\n\n\u2705 Replied: {selected_label}"
+    data = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': confirmed_text,
+        'parse_mode': 'HTML',
+    }
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/editMessageText",
+            data=data, timeout=10)
+    except Exception:
+        # Best effort — original message stays if edit fails
+        pass
 
 
 def get_safe_env_session(session: SessionState) -> Dict[str, str]:
@@ -1942,24 +1965,59 @@ def run_multi_session():
                     cb_message = callback_query.get('message', {})
                     cb_topic_id = str(cb_message.get('message_thread_id', ''))
 
+                    log_multi(f"Callback: data={cb_data!r} topic={cb_topic_id!r}")
+
                     cb_session = manager.get_session_by_topic(cb_topic_id) if cb_topic_id else None
 
-                    if cb_session and cb_data.startswith('opt:'):
+                    if not cb_session:
+                        # No session found — answer callback to stop animation
+                        log_multi(f"Callback: no session for topic {cb_topic_id!r} "
+                                  f"(known: {list(manager.sessions.keys())})", "WARN")
+                        # Answer using shared bot token to stop button animation
+                        if manager.bot_token:
+                            try:
+                                requests.post(
+                                    f"https://api.telegram.org/bot{manager.bot_token}/answerCallbackQuery",
+                                    data={'callback_query_id': cb_id}, timeout=10)
+                            except Exception:
+                                pass
+                        continue
+
+                    if cb_data.startswith('opt:'):
                         parts = cb_data.split(':')
                         option_num = parts[-1] if len(parts) >= 3 else ''
                         from_chat = str(cb_message.get('chat', {}).get('id', ''))
+                        cb_msg_id = cb_message.get('message_id')
+                        cb_msg_text = cb_message.get('text', '')
 
                         if from_chat == cb_session.chat_id and option_num and not cb_session.paused:
+                            # Find the label for the selected option from the keyboard
+                            selected_label = option_num
+                            reply_markup = cb_message.get('reply_markup', {})
+                            for row in reply_markup.get('inline_keyboard', []):
+                                for btn in row:
+                                    if btn.get('callback_data', '') == cb_data:
+                                        selected_label = btn.get('text', option_num)
+                                        break
+
                             if inject_to_tmux_session(cb_session, option_num):
+                                log_session(cb_session, f"Callback: injected option {option_num}")
                                 answer_callback_query_session(cb_session, cb_id, f"Sent: {option_num}")
+                                # Edit message to confirm selection and remove buttons
+                                if cb_msg_id:
+                                    confirm_button_selection(
+                                        cb_session.bot_token, cb_session.chat_id,
+                                        cb_msg_id, cb_msg_text, selected_label)
                             else:
+                                log_session(cb_session, f"Callback: inject failed for option {option_num}", "WARN")
                                 answer_callback_query_session(cb_session, cb_id, "Failed: session not found")
                         else:
+                            reason = "paused" if cb_session.paused else "chat mismatch or empty option"
+                            log_session(cb_session, f"Callback: skipped ({reason})", "WARN")
                             answer_callback_query_session(cb_session, cb_id,
-                                "Session paused" if cb_session and cb_session.paused else "")
+                                "Session paused" if cb_session.paused else "")
                     else:
-                        if cb_session:
-                            answer_callback_query_session(cb_session, cb_id)
+                        answer_callback_query_session(cb_session, cb_id)
                     continue
 
                 message = update.get('message', {})
@@ -2195,17 +2253,38 @@ def run_listener():
                     cb_data = callback_query.get('data', '')
                     cb_message = callback_query.get('message', {})
 
+                    log(f"Callback: data={cb_data!r}")
+
                     if cb_data.startswith('opt:'):
                         parts = cb_data.split(':')
                         option_num = parts[-1] if len(parts) >= 3 else ''
                         from_chat = str(cb_message.get('chat', {}).get('id', ''))
+                        cb_msg_id = cb_message.get('message_id')
+                        cb_msg_text = cb_message.get('text', '')
 
                         if from_chat == str(CHAT_ID) and option_num:
+                            # Find the label for the selected option from the keyboard
+                            selected_label = option_num
+                            reply_markup = cb_message.get('reply_markup', {})
+                            for row in reply_markup.get('inline_keyboard', []):
+                                for btn in row:
+                                    if btn.get('callback_data', '') == cb_data:
+                                        selected_label = btn.get('text', option_num)
+                                        break
+
                             if inject_to_tmux(option_num):
+                                log(f"Callback: injected option {option_num}")
                                 answer_callback_query(cb_id, f"Sent: {option_num}")
+                                # Edit message to confirm selection and remove buttons
+                                if cb_msg_id:
+                                    confirm_button_selection(
+                                        BOT_TOKEN, str(CHAT_ID),
+                                        cb_msg_id, cb_msg_text, selected_label)
                             else:
+                                log(f"Callback: inject failed for option {option_num}", "WARN")
                                 answer_callback_query(cb_id, "Failed: session not found")
                         else:
+                            log(f"Callback: chat mismatch or empty option", "WARN")
                             answer_callback_query(cb_id)
                     else:
                         answer_callback_query(cb_id)

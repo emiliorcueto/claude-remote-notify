@@ -61,8 +61,9 @@ DIFF_PATTERN = re.compile(r'^[+][^\s]|^[-][^\s]|^[+]{2,3}\s|^[-]{2,3}\s|^@@\s|^d
 PROMPT_PATTERN = re.compile(r'^>\s*[_\s]*$')
 
 # Option pattern (numbered items)
+# [>\u276f\u203a] matches ASCII > and Unicode cursor chars (❯ ›) used by CLI tools
 OPTION_PATTERN = re.compile(
-    r'^\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$'
+    r'^\s*[>\u276f\u203a]?\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$'
 )
 
 
