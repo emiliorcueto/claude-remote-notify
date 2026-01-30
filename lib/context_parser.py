@@ -13,6 +13,7 @@ Line Classification:
   DIFF       Starts with +/-/@@/diff --git                 +added line
   FILE_PATH  Path with extension + separator (- or ()      src/app.js - Added auth
   PROMPT     Matches > or > _ at line start                > _
+  UI         Terminal chrome (⏺⎿✻✢❯➜⏵›, ─── rules)       ✻ Whirring... (esc to interrupt)
   OPTION     Numbered: 1. / 1) / #1 / (1)                 1. Token bucket
   BULLET     Starts with - or * at column 0                - JWT validation
   TEXT       Everything else (natural language)             All 12 tests pass.
@@ -30,6 +31,7 @@ CODE = 'code'
 DIFF = 'diff'
 FILE_PATH = 'filepath'
 PROMPT = 'prompt'
+UI = 'ui'
 OPTION = 'option'
 BULLET = 'bullet'
 TEXT = 'text'
@@ -37,6 +39,9 @@ EMPTY = 'empty'
 
 # Natural language types (kept in output)
 NL_TYPES = {TEXT, BULLET, OPTION}
+
+# Noise types (stop backward scan, stripped from trailing lines)
+NOISE_TYPES = {CODE, DIFF, FILE_PATH, UI}
 
 # Code signal patterns
 CODE_SIGNALS = re.compile(
@@ -59,6 +64,15 @@ DIFF_PATTERN = re.compile(r'^[+][^\s]|^[-][^\s]|^[+]{2,3}\s|^[-]{2,3}\s|^@@\s|^d
 
 # Prompt line pattern (Claude Code's > prompt)
 PROMPT_PATTERN = re.compile(r'^>\s*[_\s]*$')
+
+# Terminal UI chrome (Claude Code TUI symbols, shell prompts, separators)
+# ⏺ tool calls, ⎿ tool output, ✻✢ status spinners, ❯➜ shell prompts,
+# ⏵› navigation, ─━ horizontal rules
+UI_PATTERN = re.compile(
+    r'^\s*[⏺⎿✻✢⏵❯➜›]|'
+    r'esc to interrupt|'
+    r'^\s*[─━]{3,}\s*$'
+)
 
 # Option pattern (numbered items)
 OPTION_PATTERN = re.compile(
@@ -89,6 +103,9 @@ def classify_line(line: str) -> str:
 
     if FILE_PATH_PATTERN.match(stripped):
         return FILE_PATH
+
+    if UI_PATTERN.search(stripped):
+        return UI
 
     leading_spaces = len(stripped) - len(stripped.lstrip())
     if leading_spaces >= 2 and CODE_SIGNALS.search(stripped):
@@ -126,9 +143,8 @@ def extract_notification_context(text: str, max_chars: int = 500) -> str:
     while classified and classified[-1][1] in (PROMPT, EMPTY):
         classified.pop()
 
-    # Strip trailing noise (terminal UI, status bar lines with []() chars)
-    # These aren't real code — just terminal chrome that contains code signals.
-    while classified and classified[-1][1] in (CODE, DIFF, FILE_PATH, EMPTY):
+    # Strip trailing noise (terminal UI, code, diffs, file paths)
+    while classified and classified[-1][1] in (*NOISE_TYPES, EMPTY):
         classified.pop()
 
     if not classified:
@@ -155,7 +171,7 @@ def extract_notification_context(text: str, max_chars: int = 500) -> str:
     hit_noise = False
 
     for line, line_type in reversed(classified):
-        if line_type in (CODE, DIFF, FILE_PATH):
+        if line_type in NOISE_TYPES:
             hit_noise = True
             break
         if line_type == EMPTY:
