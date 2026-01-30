@@ -325,3 +325,28 @@ class TestEdgeCases:
         result = extract_notification_context(text)
         # Should not have more than one consecutive blank line
         assert '\n\n\n' not in result
+
+    def test_trailing_terminal_status_bar_stripped(self):
+        """Terminal UI lines with []() at the bottom should be skipped."""
+        text = (
+            "Some old text\n"
+            "Want to continue?\n"
+            "  ➜  my-repo git:(main) [Opus 4.5] [37%]\n"
+            "  ⏵⏵ accept edits (shift+Tab)\n"
+            "> _"
+        )
+        result = extract_notification_context(text)
+        assert 'Want to continue?' in result
+        assert 'Opus 4.5' not in result
+        assert 'accept edits' not in result
+
+    def test_fallback_returns_bottom_not_top(self):
+        """When fallback triggers, it should return bottom content."""
+        # All code lines — trailing noise stripping empties classified,
+        # so fallback returns truncated input from the bottom
+        lines = [f"  const x{i} = {i};" for i in range(30)]
+        text = '\n'.join(lines)
+        result = extract_notification_context(text, max_chars=200)
+        # Should contain the last lines, not the first
+        assert 'x29' in result
+        assert 'x0' not in result

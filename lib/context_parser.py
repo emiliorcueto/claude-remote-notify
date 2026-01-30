@@ -126,8 +126,28 @@ def extract_notification_context(text: str, max_chars: int = 500) -> str:
     while classified and classified[-1][1] in (PROMPT, EMPTY):
         classified.pop()
 
+    # Strip trailing noise (terminal UI, status bar lines with []() chars)
+    # These aren't real code — just terminal chrome that contains code signals.
+    while classified and classified[-1][1] in (CODE, DIFF, FILE_PATH, EMPTY):
+        classified.pop()
+
     if not classified:
-        return text[:max_chars].strip()
+        # Return bottom portion of text (most recent = most relevant)
+        stripped = text.strip()
+        if len(stripped) <= max_chars:
+            return stripped
+        # Collect whole lines from the bottom
+        all_lines = stripped.split('\n')
+        tail = []
+        total = 0
+        for line in reversed(all_lines):
+            line_len = len(line) + 1
+            if total + line_len > max_chars:
+                break
+            tail.append(line)
+            total += line_len
+        tail.reverse()
+        return '\n'.join(tail).strip()
 
     # Work backwards: collect NL lines, stop at code/diff/filepath block
     collected = []
@@ -178,11 +198,20 @@ def extract_notification_context(text: str, max_chars: int = 500) -> str:
 
     result = '\n'.join(collapsed).strip()
 
-    # Fallback: if too little was extracted, return truncated full text
+    # Fallback: if too little was extracted, return bottom of full text
     if len(result) < 10:
-        # Remove prompt lines from full text for fallback
         fallback_lines = [line for line, lt in classified if lt != PROMPT]
-        return '\n'.join(fallback_lines)[:max_chars].strip()
+        # Collect from bottom (most recent = most relevant)
+        fb_collected = []
+        fb_total = 0
+        for line in reversed(fallback_lines):
+            line_len = len(line) + 1
+            if fb_total + line_len > max_chars:
+                break
+            fb_collected.append(line)
+            fb_total += line_len
+        fb_collected.reverse()
+        return '\n'.join(fb_collected).strip()
 
     return result
 
