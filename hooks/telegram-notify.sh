@@ -46,7 +46,7 @@ CONFIG_FILE="$SESSIONS_DIR/$SESSION_NAME.conf"
 GLOBAL_CONFIG="$CLAUDE_HOME/telegram-remote.conf"
 NOTIFY_FLAG_FILE="$CLAUDE_HOME/notifications-enabled"
 TMUX_SESSION="${TMUX_SESSION:-claude-$SESSION_NAME}"
-CONTEXT_LINES=30
+CONTEXT_LINES=15
 
 # -----------------------------------------------------------------------------
 # Check if notifications are enabled
@@ -152,57 +152,89 @@ else
     ESCAPED_SESSION="${ESCAPED_SESSION//>/&gt;}"
 fi
 
-# Build HTML message with session identifier
 MESSAGE="$EMOJI <b>[$ESCAPED_SESSION] $HEADER</b>
-⏰ $(date '+%H:%M:%S')
 
 <pre>$ESCAPED_CONTEXT</pre>
 
-💬 Reply here to send input"
+💬 Reply here or /preview for full context"
 
 # Try sending with inline keyboard if options detected (Python + requests)
 KEYBOARD_SENT=false
+# Note: Python exits 1 when no options found (intentional fallback to curl).
+# || true prevents set -e from aborting the script.
+mkdir -p "$CLAUDE_HOME/logs"
+KEYBOARD_LOG="$CLAUDE_HOME/logs/keyboard-debug.log"
 python3 -c '
 import sys, json, re
+from datetime import datetime
+
+def log(msg):
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", file=sys.stderr)
+
 try:
     import requests
 except ImportError:
+    log("ERROR: requests module not installed")
     sys.exit(2)
 
-message, bot_token, chat_id = sys.argv[1], sys.argv[2], sys.argv[3]
-topic_id = sys.argv[4] if len(sys.argv) > 4 else ""
-session_name = sys.argv[5] if len(sys.argv) > 5 else "default"
+try:
+    message, bot_token, chat_id = sys.argv[1], sys.argv[2], sys.argv[3]
+    topic_id = sys.argv[4] if len(sys.argv) > 4 else ""
+    session_name = sys.argv[5] if len(sys.argv) > 5 else "default"
 
-pattern = re.compile(r"^\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$", re.MULTILINE)
-matches = pattern.findall(message)
+    # Strip HTML tags and unescape entities for option detection.
+    # <pre> on first line breaks ^ anchor; &gt; breaks > cursor match.
+    clean = re.sub(r"<[^>]+>", "\n", message)
+    clean = clean.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    # Group 1 captures cursor prefix (>, ❯, ›) — present only on interactive prompts.
+    # Numbered lists without a cursor are informational, not clickable choices.
+    pattern = re.compile(
+        r"^\s*([>\u276f\u203a])?\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$",
+        re.MULTILINE)
+    matches = pattern.findall(clean)
 
-if len(matches) < 2:
-    sys.exit(1)  # No options - fall back to curl
+    has_cursor = any(m[0] for m in matches)
+    log(f"Options detected: {len(matches)}, cursor_present={has_cursor}")
+    for m in matches[:8]:
+        num = m[1] or m[2] or m[3]
+        log(f"  #{num}: {m[4].strip()[:60]}")
 
-buttons = []
-for match in matches[:8]:
-    num = match[0] or match[1] or match[2]
-    text = match[3].strip()
-    label = f"{num}. {text[:37]}..." if len(text) > 37 else f"{num}. {text}"
-    buttons.append([{"text": label, "callback_data": f"opt:{session_name[:40]}:{num}"}])
+    if len(matches) < 2 or not has_cursor:
+        if matches and not has_cursor:
+            log("Numbered list without cursor prefix — not an interactive prompt")
+        else:
+            log("< 2 options found, falling back to curl")
+        sys.exit(1)
 
-data = {
-    "chat_id": chat_id,
-    "text": message,
-    "parse_mode": "HTML",
-    "reply_markup": json.dumps({"inline_keyboard": buttons})
-}
-if topic_id:
-    data["message_thread_id"] = topic_id
+    buttons = []
+    for match in matches[:8]:
+        num = match[1] or match[2] or match[3]
+        text = match[4].strip()
+        label = f"{num}. {text[:37]}..." if len(text) > 37 else f"{num}. {text}"
+        buttons.append([{"text": label, "callback_data": f"opt:{session_name[:40]}:{num}"}])
 
-resp = requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=data, timeout=10)
-sys.exit(0 if resp.json().get("ok") else 1)
-' "$MESSAGE" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$TOPIC_ID" "$SESSION_NAME" 2>/dev/null
+    log(f"Sending {len(buttons)} buttons")
 
-PYTHON_EXIT=$?
-if [ $PYTHON_EXIT -eq 0 ]; then
-    KEYBOARD_SENT=true
-fi
+    data = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "HTML",
+        "reply_markup": json.dumps({"inline_keyboard": buttons})
+    }
+    if topic_id:
+        data["message_thread_id"] = topic_id
+
+    resp = requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=data, timeout=10)
+    ok = resp.json().get("ok")
+    log(f"API response ok={ok}")
+    if not ok:
+        log(f"API error: {resp.text[:200]}")
+    sys.exit(0 if ok else 1)
+
+except Exception as e:
+    log(f"EXCEPTION: {type(e).__name__}: {e}")
+    sys.exit(1)
+' "$MESSAGE" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$TOPIC_ID" "$SESSION_NAME" 2>>"$KEYBOARD_LOG" && KEYBOARD_SENT=true || true
 
 # Fallback: send via curl without keyboard (or if Python failed)
 if [ "$KEYBOARD_SENT" = "false" ]; then
