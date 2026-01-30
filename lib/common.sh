@@ -354,6 +354,59 @@ validate_topic_id() {
     fi
 }
 
+# Resolve session identifier (name or topic ID) to session name
+# Priority: exact session config match > topic ID scan > passthrough
+# Usage: resolved=$(resolve_session_identifier "70" "/path/to/sessions")
+resolve_session_identifier() {
+    local identifier="$1"
+    local sessions_dir="$2"
+
+    # Session name match takes priority (config file exists)
+    if [ -f "$sessions_dir/$identifier.conf" ]; then
+        echo "$identifier"
+        return 0
+    fi
+
+    # Numeric identifier → scan configs for matching TELEGRAM_TOPIC_ID
+    if [[ "$identifier" =~ ^[0-9]+$ ]]; then
+        local match_count=0
+        local match_name=""
+        local match_names=""
+
+        local _conf
+        for _conf in "$sessions_dir"/*.conf; do
+            [ -f "$_conf" ] || continue
+            local _name
+            _name=$(basename "$_conf" .conf)
+            local _topic_id=""
+            _topic_id=$(grep "^TELEGRAM_TOPIC_ID" "$_conf" 2>/dev/null \
+                | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+
+            if [ "$_topic_id" = "$identifier" ]; then
+                match_count=$((match_count + 1))
+                match_name="$_name"
+                match_names="$match_names $_name"
+            fi
+        done
+
+        if [ "$match_count" -eq 1 ]; then
+            echo "$match_name"
+            return 0
+        elif [ "$match_count" -gt 1 ]; then
+            echo "Error: Topic ID '$identifier' matches multiple sessions:$match_names" >&2
+            return 1
+        fi
+
+        echo "Error: No session found with topic ID '$identifier'" >&2
+        echo "Use 'claude-remote --list' to see available sessions." >&2
+        return 1
+    fi
+
+    # Non-numeric, no config match → passthrough for downstream handling
+    echo "$identifier"
+    return 0
+}
+
 # =============================================================================
 # SENSITIVE DATA MASKING
 # =============================================================================

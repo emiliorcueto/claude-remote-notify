@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- Topic ID as alternative session identifier (Issue #27)
+  - `claude-remote 70` resolves topic ID to session name
+  - Session names take priority over topic IDs when ambiguous
+  - Clear errors for unknown or duplicate topic IDs
+  - `resolve_session_identifier()` in lib/common.sh
 - Smart notification context parsing (Issue #25)
   - Extracts natural language text from terminal context (questions, summaries, options, bullets)
   - Omits code blocks, diffs, file paths, and prompt lines

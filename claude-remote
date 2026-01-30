@@ -6,7 +6,7 @@
 # Multi-session support with Telegram Topics
 #
 # Usage:
-#   claude-remote [SESSION_NAME] [OPTIONS]
+#   claude-remote [SESSION | TOPIC_ID] [OPTIONS]
 #
 # Options:
 #   --status        Show status of session(s)
@@ -14,9 +14,14 @@
 #   --list          List all active sessions
 #   --new           Create new session (interactive setup)
 #
+# Arguments:
+#   SESSION         Session name (e.g., myproject)
+#   TOPIC_ID        Numeric Telegram Topic ID (resolves to session)
+#
 # Examples:
 #   claude-remote                  # Start/attach "default" session
 #   claude-remote myproject        # Start/attach "myproject" session
+#   claude-remote 70               # Start session with topic ID 70
 #   claude-remote myproject --kill # Stop myproject session
 #   claude-remote --list           # Show all sessions
 #   claude-remote --new            # Create new session config
@@ -42,6 +47,16 @@ HOOKS_DIR="$CLAUDE_HOME/hooks"
 
 # Ensure directories exist
 mkdir -p "$SESSIONS_DIR" "$PIDS_DIR" "$LOGS_DIR"
+
+# Source shared utilities (resolve symlinks to find actual script location)
+_SCRIPT_PATH="$0"
+[[ "$_SCRIPT_PATH" != */* ]] && _SCRIPT_PATH="$(command -v "$_SCRIPT_PATH" 2>/dev/null || echo "$_SCRIPT_PATH")"
+[ -L "$_SCRIPT_PATH" ] && _SCRIPT_PATH="$(readlink "$_SCRIPT_PATH")"
+SCRIPT_DIR="$(cd "$(dirname "$_SCRIPT_PATH")" && pwd)"
+unset _SCRIPT_PATH
+if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
+    source "$SCRIPT_DIR/lib/common.sh"
+fi
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -629,7 +644,11 @@ main() {
                 shift
                 ;;
             --help|-h)
-                echo "Usage: claude-remote [SESSION] [OPTIONS]"
+                echo "Usage: claude-remote [SESSION | TOPIC_ID] [OPTIONS]"
+                echo ""
+                echo "Arguments:"
+                echo "  SESSION        Session name (e.g., myproject)"
+                echo "  TOPIC_ID       Numeric Telegram Topic ID (resolves to session)"
                 echo ""
                 echo "Options:"
                 echo "  --status, -s   Show session status"
@@ -641,6 +660,7 @@ main() {
                 echo "Examples:"
                 echo "  claude-remote              # Start 'default' session"
                 echo "  claude-remote myproject    # Start 'myproject' session"
+                echo "  claude-remote 70           # Start session with topic ID 70"
                 echo "  claude-remote --list       # List all sessions"
                 exit 0
                 ;;
@@ -653,7 +673,19 @@ main() {
                 ;;
         esac
     done
-    
+
+    # Resolve session identifier (name or topic ID)
+    if [ "$action" != "list" ] && [ "$action" != "new" ] && [ "$session" != "default" ]; then
+        if type resolve_session_identifier &>/dev/null; then
+            local resolved
+            resolved=$(resolve_session_identifier "$session" "$SESSIONS_DIR") || exit 1
+            if [ "$resolved" != "$session" ]; then
+                info "Resolved topic ID $session → session '$resolved'"
+                session="$resolved"
+            fi
+        fi
+    fi
+
     # Execute action
     case "$action" in
         start)

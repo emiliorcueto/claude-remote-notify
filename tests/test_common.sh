@@ -588,6 +588,139 @@ test_validate_topic_id() {
 }
 
 # =============================================================================
+# TESTS: SESSION IDENTIFIER RESOLUTION
+# =============================================================================
+
+test_resolve_by_name() {
+    echo ""
+    echo "Testing: resolve_session_identifier by name"
+
+    setup
+    mkdir -p "$TEMP_DIR/sessions"
+    cat > "$TEMP_DIR/sessions/myproject.conf" << 'EOF'
+TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789"
+TELEGRAM_CHAT_ID="-1001234567890"
+TELEGRAM_TOPIC_ID="70"
+TMUX_SESSION="claude-myproject"
+EOF
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+        result=$(resolve_session_identifier "myproject" "$TEMP_DIR/sessions")
+        assert_equals "myproject" "$result" "Session name resolves to itself"
+    )
+    teardown
+}
+
+test_resolve_by_topic_id() {
+    echo ""
+    echo "Testing: resolve_session_identifier by topic ID"
+
+    setup
+    mkdir -p "$TEMP_DIR/sessions"
+    cat > "$TEMP_DIR/sessions/myproject.conf" << 'EOF'
+TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789"
+TELEGRAM_CHAT_ID="-1001234567890"
+TELEGRAM_TOPIC_ID="70"
+TMUX_SESSION="claude-myproject"
+EOF
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+        result=$(resolve_session_identifier "70" "$TEMP_DIR/sessions")
+        assert_equals "myproject" "$result" "Topic ID 70 resolves to myproject"
+    )
+    teardown
+}
+
+test_resolve_name_priority() {
+    echo ""
+    echo "Testing: resolve_session_identifier name takes priority over topic ID"
+
+    setup
+    mkdir -p "$TEMP_DIR/sessions"
+    # Session literally named "70"
+    cat > "$TEMP_DIR/sessions/70.conf" << 'EOF'
+TELEGRAM_TOPIC_ID="999"
+EOF
+    # Another session with topic_id=70
+    cat > "$TEMP_DIR/sessions/other.conf" << 'EOF'
+TELEGRAM_TOPIC_ID="70"
+EOF
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+        result=$(resolve_session_identifier "70" "$TEMP_DIR/sessions")
+        assert_equals "70" "$result" "Session name '70' wins over topic_id=70"
+    )
+    teardown
+}
+
+test_resolve_topic_not_found() {
+    echo ""
+    echo "Testing: resolve_session_identifier topic ID not found"
+
+    setup
+    mkdir -p "$TEMP_DIR/sessions"
+    cat > "$TEMP_DIR/sessions/myproject.conf" << 'EOF'
+TELEGRAM_TOPIC_ID="70"
+EOF
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        assert_command_fails "Unknown topic ID rejected" \
+            resolve_session_identifier "999" "$TEMP_DIR/sessions"
+    )
+    teardown
+}
+
+test_resolve_topic_duplicate() {
+    echo ""
+    echo "Testing: resolve_session_identifier duplicate topic ID"
+
+    setup
+    mkdir -p "$TEMP_DIR/sessions"
+    cat > "$TEMP_DIR/sessions/session1.conf" << 'EOF'
+TELEGRAM_TOPIC_ID="70"
+EOF
+    cat > "$TEMP_DIR/sessions/session2.conf" << 'EOF'
+TELEGRAM_TOPIC_ID="70"
+EOF
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        assert_command_fails "Duplicate topic ID rejected" \
+            resolve_session_identifier "70" "$TEMP_DIR/sessions"
+    )
+    teardown
+}
+
+test_resolve_nonexistent_passthrough() {
+    echo ""
+    echo "Testing: resolve_session_identifier non-numeric unknown passes through"
+
+    setup
+    mkdir -p "$TEMP_DIR/sessions"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        local result
+        result=$(resolve_session_identifier "nonexistent" "$TEMP_DIR/sessions")
+        assert_equals "nonexistent" "$result" "Non-numeric name passes through"
+    )
+    teardown
+}
+
+# =============================================================================
 # TESTS: SENSITIVE DATA MASKING
 # =============================================================================
 
@@ -957,6 +1090,12 @@ run_all_tests() {
     test_validate_bot_token
     test_validate_chat_id
     test_validate_topic_id
+    test_resolve_by_name
+    test_resolve_by_topic_id
+    test_resolve_name_priority
+    test_resolve_topic_not_found
+    test_resolve_topic_duplicate
+    test_resolve_nonexistent_passthrough
     test_mask_sensitive
     test_urlencode_shell
     test_urlencode_python
