@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- HTML message formatting + inline keyboard buttons (Issue #24)
+  - All outgoing messages use Telegram HTML parse_mode (bold headers, code blocks, pre-formatted output)
+  - Inline keyboard buttons when 2+ numbered options detected in notifications
+  - Button clicks inject option number into correct tmux session
+  - `escape_html()` Python utility and `html_escape()` bash function
+  - `callback_query` handling in both single-session and multi-session modes
+  - Backwards compatible: falls back to plain curl if Python unavailable
 - Multi-session Telegram listener (Issue #22)
   - Single listener process polls Telegram once, routes by topic ID
   - Eliminates "terminated by other getUpdates request" API conflicts

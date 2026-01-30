@@ -65,6 +65,22 @@ except ImportError:
 
 
 # =============================================================================
+# HTML FORMATTING
+# =============================================================================
+
+# Regex for detecting numbered options in terminal output
+OPTION_PATTERN = re.compile(
+    r'^\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$',
+    re.MULTILINE
+)
+
+
+def escape_html(text: str) -> str:
+    """Escape HTML special characters for Telegram parse_mode=HTML."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+# =============================================================================
 # MULTI-SESSION DATA STRUCTURES
 # =============================================================================
 
@@ -468,7 +484,7 @@ def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     params = {
         'timeout': POLL_TIMEOUT,
-        'allowed_updates': ['message']
+        'allowed_updates': ['message', 'callback_query']
     }
     if offset:
         params['offset'] = offset
@@ -568,7 +584,7 @@ def get_updates_multi(offset: Optional[int], bot_token: str) -> list:
     url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
     params = {
         'timeout': POLL_TIMEOUT,
-        'allowed_updates': ['message']
+        'allowed_updates': ['message', 'callback_query']
     }
     if offset:
         params['offset'] = offset
@@ -653,6 +669,30 @@ def set_message_reaction_session(session: SessionState, message_id: int, emoji: 
     except Exception as e:
         log_multi(f"[{session.name}] Error setting reaction: {e}", "ERROR")
         return False
+
+
+def answer_callback_query(callback_query_id: str, text: str = ""):
+    """Acknowledge a callback query (single-session mode)."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    data = {'callback_query_id': callback_query_id}
+    if text:
+        data['text'] = text
+    try:
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        log(f"Error answering callback: {e}", "ERROR")
+
+
+def answer_callback_query_session(session: SessionState, callback_query_id: str, text: str = ""):
+    """Acknowledge a callback query (multi-session mode)."""
+    url = f"https://api.telegram.org/bot{session.bot_token}/answerCallbackQuery"
+    data = {'callback_query_id': callback_query_id}
+    if text:
+        data['text'] = text
+    try:
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        log_session(session, f"Error answering callback: {e}", "ERROR")
 
 
 def get_safe_env_session(session: SessionState) -> Dict[str, str]:
@@ -1156,56 +1196,60 @@ def handle_command(command, from_user, message_id=None):
     if cmd == '/status':
         session_status = "✅ Running" if tmux_session_exists() else "❌ Not running"
         snapshot = get_tmux_snapshot(15)
-        
+
         topic_info = f"\nTopic ID: {TOPIC_ID}" if TOPIC_ID else "\n(No topic filtering)"
-        
+
         send_message(
-            f"📊 [{SESSION_NAME}] Status\n\n"
-            f"Session: {TMUX_SESSION}\n"
+            f"📊 <b>[{escape_html(SESSION_NAME)}] Status</b>\n\n"
+            f"Session: <code>{escape_html(TMUX_SESSION)}</code>\n"
             f"Status: {session_status}"
             f"{topic_info}\n\n"
-            f"Recent output:\n{snapshot[-800:]}"
+            f"<b>Recent output:</b>\n<pre>{escape_html(snapshot[-800:])}</pre>",
+            parse_mode='HTML'
         )
         return True
-    
+
     # -------------------------------------------------------------------------
     # /ping - Connectivity test
     # -------------------------------------------------------------------------
     elif cmd == '/ping':
-        send_message(f"🏓 [{SESSION_NAME}] Pong! Listener active.")
+        send_message(
+            f"🏓 <b>[{escape_html(SESSION_NAME)}]</b> Pong! Listener active.",
+            parse_mode='HTML'
+        )
         return True
-    
+
     # -------------------------------------------------------------------------
     # /help - Show all commands
     # -------------------------------------------------------------------------
     elif cmd == '/help':
         send_message(
-            f"🤖 [{SESSION_NAME}] Telegram Commands\n\n"
-            "━━━ Status ━━━\n"
+            f"🤖 <b>[{escape_html(SESSION_NAME)}] Commands</b>\n\n"
+            "<b>Status</b>\n"
             "/status - Session status + recent output\n"
             "/ping - Test listener connectivity\n"
             "/help - Show this help\n\n"
-            "━━━ Context ━━━\n"
-            "/clear - Clear Claude context\n"
-            "/compact - Compact Claude context\n\n"
-            "━━━ Preview ━━━\n"
+            "<b>Context</b>\n"
+            "/clear - Clear context\n"
+            "/compact - Compact context\n\n"
+            "<b>Preview</b>\n"
             "/preview - Send last 50 lines (with colors)\n"
             "/preview N - Send last N lines\n"
             "/preview back N - Send Nth previous exchange\n"
             "/preview help - Show preview help\n"
             "/output - Alias for /preview\n\n"
-            "━━━ Notifications ━━━\n"
+            "<b>Notifications</b>\n"
             "/notify - Show notify help\n"
             "/notify on|off - Toggle notifications\n"
             "/notify status - Check notification state\n"
             "/notify config - Show full configuration\n"
             "/notify start|stop - Listener control\n\n"
-            "━━━ Media ━━━\n"
+            "<b>Media</b>\n"
             "📷 Photos - Downloaded, sent as [Image: /path]\n"
             "📄 Documents - Downloaded, sent as [Document: /path]\n"
             "❌ Voice/Video/Stickers - Not supported\n\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Any other text is sent directly to Claude."
+            "Any other text is sent directly.",
+            parse_mode='HTML'
         )
         return True
 
@@ -1214,14 +1258,23 @@ def handle_command(command, from_user, message_id=None):
     # -------------------------------------------------------------------------
     elif cmd == '/clear':
         if not tmux_session_exists():
-            send_message(f"❌ [{SESSION_NAME}] tmux session not found")
+            send_message(
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> tmux session not found",
+                parse_mode='HTML'
+            )
             return True
 
-        send_message(f"🧹 [{SESSION_NAME}] Clearing context...")
+        send_message(
+            f"🧹 <b>[{escape_html(SESSION_NAME)}]</b> Clearing context...",
+            parse_mode='HTML'
+        )
         if inject_to_tmux('/clear'):
             log("Clear command sent to Claude")
         else:
-            send_message(f"❌ [{SESSION_NAME}] Failed to send clear command")
+            send_message(
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Failed to send clear command",
+                parse_mode='HTML'
+            )
         return True
 
     # -------------------------------------------------------------------------
@@ -1229,14 +1282,23 @@ def handle_command(command, from_user, message_id=None):
     # -------------------------------------------------------------------------
     elif cmd == '/compact':
         if not tmux_session_exists():
-            send_message(f"❌ [{SESSION_NAME}] tmux session not found")
+            send_message(
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> tmux session not found",
+                parse_mode='HTML'
+            )
             return True
 
-        send_message(f"📦 [{SESSION_NAME}] Compacting context...")
+        send_message(
+            f"📦 <b>[{escape_html(SESSION_NAME)}]</b> Compacting context...",
+            parse_mode='HTML'
+        )
         if inject_to_tmux('/compact'):
             log("Compact command sent to Claude")
         else:
-            send_message(f"❌ [{SESSION_NAME}] Failed to send compact command")
+            send_message(
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Failed to send compact command",
+                parse_mode='HTML'
+            )
         return True
 
     # -------------------------------------------------------------------------
@@ -1244,33 +1306,46 @@ def handle_command(command, from_user, message_id=None):
     # -------------------------------------------------------------------------
     elif cmd == '/preview':
         script = CLAUDE_HOME / 'hooks' / 'telegram-preview.sh'
-        
+
         if not script.exists():
-            send_message(f"❌ [{SESSION_NAME}] Preview script not found")
+            send_message(
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Preview script not found",
+                parse_mode='HTML'
+            )
             return True
-        
+
         # Handle /preview help specially - capture and send as message
         if args.lower() == 'help':
             output = run_script(str(script), 'help')
-            send_message(f"📺 [{SESSION_NAME}] Preview Help\n\n{output[:3500]}")
+            send_message(
+                f"📺 <b>[{escape_html(SESSION_NAME)}] Preview Help</b>\n\n"
+                f"<pre>{escape_html(output[:3500])}</pre>",
+                parse_mode='HTML'
+            )
             return True
-        
+
         # For actual preview, the script sends the file directly to Telegram
-        send_message(f"📺 [{SESSION_NAME}] Generating preview...")
+        send_message(
+            f"📺 <b>[{escape_html(SESSION_NAME)}]</b> Generating preview...",
+            parse_mode='HTML'
+        )
         output = run_script(str(script), args)
 
         # If there was an error (script outputs to stderr), report it
         if 'Error' in output or 'error' in output.lower():
             if message_id:
                 set_message_reaction(message_id, "😱")
-            send_message(f"⚠️ [{SESSION_NAME}] {output[:1000]}")
+            send_message(
+                f"⚠️ <b>[{escape_html(SESSION_NAME)}]</b> {escape_html(output[:1000])}",
+                parse_mode='HTML'
+            )
         else:
             # Success - add reaction
             if message_id:
                 set_message_reaction(message_id, "👀")
 
         return True
-    
+
     # -------------------------------------------------------------------------
     # /notify - Notification control (runs remote-notify.sh)
     # -------------------------------------------------------------------------
@@ -1278,7 +1353,10 @@ def handle_command(command, from_user, message_id=None):
         script = CLAUDE_HOME / 'hooks' / 'remote-notify.sh'
 
         if not script.exists():
-            send_message(f"❌ [{SESSION_NAME}] Notify script not found")
+            send_message(
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Notify script not found",
+                parse_mode='HTML'
+            )
             return True
 
         # Valid subcommands
@@ -1287,9 +1365,11 @@ def handle_command(command, from_user, message_id=None):
 
         if subcmd not in valid_subcmds:
             send_message(
-                f"❌ [{SESSION_NAME}] Unknown subcommand: {subcmd}\n\n"
+                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Unknown subcommand: "
+                f"<code>{escape_html(subcmd)}</code>\n\n"
                 f"Valid: {', '.join(valid_subcmds)}\n"
-                "Try: /notify help"
+                "Try: /notify help",
+                parse_mode='HTML'
             )
             return True
 
@@ -1302,10 +1382,17 @@ def handle_command(command, from_user, message_id=None):
             try:
                 notify_flag.touch()
                 log(f"Notifications enabled (flag: {notify_flag})")
-                send_message(f"🔔 [{SESSION_NAME}] Notifications enabled")
+                send_message(
+                    f"🔔 <b>[{escape_html(SESSION_NAME)}]</b> Notifications enabled",
+                    parse_mode='HTML'
+                )
             except Exception as e:
                 log(f"Failed to enable notifications: {e}", "ERROR")
-                send_message(f"❌ [{SESSION_NAME}] Failed to enable notifications: {e}")
+                send_message(
+                    f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Failed to enable notifications: "
+                    f"{escape_html(str(e))}",
+                    parse_mode='HTML'
+                )
             return True
 
         if subcmd == 'off':
@@ -1313,27 +1400,44 @@ def handle_command(command, from_user, message_id=None):
             try:
                 notify_flag.unlink(missing_ok=True)
                 log(f"Notifications disabled (flag: {notify_flag})")
-                send_message(f"🔕 [{SESSION_NAME}] Notifications disabled")
+                send_message(
+                    f"🔕 <b>[{escape_html(SESSION_NAME)}]</b> Notifications disabled",
+                    parse_mode='HTML'
+                )
             except Exception as e:
                 log(f"Failed to disable notifications: {e}", "ERROR")
-                send_message(f"❌ [{SESSION_NAME}] Failed to disable notifications: {e}")
+                send_message(
+                    f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Failed to disable notifications: "
+                    f"{escape_html(str(e))}",
+                    parse_mode='HTML'
+                )
             return True
 
         # Handle stop - pause the listener (can be resumed with /notify start)
         if subcmd == 'stop':
             listener_paused = True
             log("Stop command received - listener paused")
-            send_message(f"⏸️ [{SESSION_NAME}] Listener paused. Send /notify start to resume.")
+            send_message(
+                f"⏸️ <b>[{escape_html(SESSION_NAME)}]</b> Listener paused. "
+                "Send /notify start to resume.",
+                parse_mode='HTML'
+            )
             return True
 
         # Handle start - resume paused listener
         if subcmd == 'start':
             if not listener_paused:
-                send_message(f"✅ [{SESSION_NAME}] Listener already running")
+                send_message(
+                    f"✅ <b>[{escape_html(SESSION_NAME)}]</b> Listener already running",
+                    parse_mode='HTML'
+                )
             else:
                 listener_paused = False
                 log("Start command received - listener resumed")
-                send_message(f"▶️ [{SESSION_NAME}] Listener resumed")
+                send_message(
+                    f"▶️ <b>[{escape_html(SESSION_NAME)}]</b> Listener resumed",
+                    parse_mode='HTML'
+                )
             return True
 
         output = run_script(str(script), subcmd)
@@ -1343,19 +1447,27 @@ def handle_command(command, from_user, message_id=None):
 
         # Format response based on subcommand
         if subcmd == 'help':
-            send_message(f"🔔 [{SESSION_NAME}] Notify Help\n\n{output[:3500]}")
+            send_message(
+                f"🔔 <b>[{escape_html(SESSION_NAME)}] Notify Help</b>\n\n"
+                f"<pre>{escape_html(output[:3500])}</pre>",
+                parse_mode='HTML'
+            )
         else:
-            send_message(f"🔔 [{SESSION_NAME}] {subcmd.title()}\n\n{output[:2000]}")
+            send_message(
+                f"🔔 <b>[{escape_html(SESSION_NAME)}] {escape_html(subcmd.title())}</b>\n\n"
+                f"<pre>{escape_html(output[:2000])}</pre>",
+                parse_mode='HTML'
+            )
 
         return True
-    
+
     # -------------------------------------------------------------------------
     # /output - Alias for /preview
     # -------------------------------------------------------------------------
     elif cmd == '/output':
         # Redirect to /preview handler
         return handle_command(f'/preview {args}', from_user, message_id)
-    
+
     return False
 
 # =============================================================================
@@ -1413,11 +1525,12 @@ def handle_command_session(command: str, from_user: str, message_id: int,
         paused_info = " (PAUSED)" if session.paused else ""
 
         send_message_session(session,
-            f"📊 [{session.name}] Status{paused_info}\n\n"
-            f"Session: {session.tmux_session}\n"
+            f"📊 <b>[{escape_html(session.name)}] Status{paused_info}</b>\n\n"
+            f"Session: <code>{escape_html(session.tmux_session)}</code>\n"
             f"Status: {session_status}\n"
             f"Topic ID: {session.topic_id}\n\n"
-            f"Recent output:\n{snapshot[-800:]}"
+            f"<b>Recent output:</b>\n<pre>{escape_html(snapshot[-800:])}</pre>",
+            parse_mode='HTML'
         )
         return True
 
@@ -1425,7 +1538,10 @@ def handle_command_session(command: str, from_user: str, message_id: int,
     # /ping - Connectivity test
     # -------------------------------------------------------------------------
     elif cmd == '/ping':
-        send_message_session(session, f"🏓 [{session.name}] Pong! Multi-session listener active.")
+        send_message_session(session,
+            f"🏓 <b>[{escape_html(session.name)}]</b> Pong! Multi-session listener active.",
+            parse_mode='HTML'
+        )
         return True
 
     # -------------------------------------------------------------------------
@@ -1433,32 +1549,32 @@ def handle_command_session(command: str, from_user: str, message_id: int,
     # -------------------------------------------------------------------------
     elif cmd == '/help':
         send_message_session(session,
-            f"🤖 [{session.name}] Telegram Commands\n\n"
-            "━━━ Status ━━━\n"
+            f"🤖 <b>[{escape_html(session.name)}] Commands</b>\n\n"
+            "<b>Status</b>\n"
             "/status - Session status + recent output\n"
             "/ping - Test listener connectivity\n"
             "/help - Show this help\n\n"
-            "━━━ Context ━━━\n"
-            "/clear - Clear Claude context\n"
-            "/compact - Compact Claude context\n\n"
-            "━━━ Preview ━━━\n"
+            "<b>Context</b>\n"
+            "/clear - Clear context\n"
+            "/compact - Compact context\n\n"
+            "<b>Preview</b>\n"
             "/preview - Send last 50 lines (with colors)\n"
             "/preview N - Send last N lines\n"
             "/preview back N - Send Nth previous exchange\n"
             "/preview help - Show preview help\n"
             "/output - Alias for /preview\n\n"
-            "━━━ Notifications ━━━\n"
+            "<b>Notifications</b>\n"
             "/notify - Show notify help\n"
             "/notify on|off - Toggle notifications (global)\n"
             "/notify status - Check notification state\n"
             "/notify config - Show full configuration\n"
             "/notify start|stop - Pause/resume THIS session\n\n"
-            "━━━ Media ━━━\n"
+            "<b>Media</b>\n"
             "📷 Photos - Downloaded, sent as [Image: /path]\n"
             "📄 Documents - Downloaded, sent as [Document: /path]\n"
             "❌ Voice/Video/Stickers - Not supported\n\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "Any other text is sent directly to Claude."
+            "Any other text is sent directly.",
+            parse_mode='HTML'
         )
         return True
 
@@ -1467,14 +1583,23 @@ def handle_command_session(command: str, from_user: str, message_id: int,
     # -------------------------------------------------------------------------
     elif cmd == '/clear':
         if not tmux_session_exists_for(session.tmux_session):
-            send_message_session(session, f"❌ [{session.name}] tmux session not found")
+            send_message_session(session,
+                f"❌ <b>[{escape_html(session.name)}]</b> tmux session not found",
+                parse_mode='HTML'
+            )
             return True
 
-        send_message_session(session, f"🧹 [{session.name}] Clearing context...")
+        send_message_session(session,
+            f"🧹 <b>[{escape_html(session.name)}]</b> Clearing context...",
+            parse_mode='HTML'
+        )
         if inject_to_tmux_session(session, '/clear'):
             log_session(session, "Clear command sent to Claude")
         else:
-            send_message_session(session, f"❌ [{session.name}] Failed to send clear command")
+            send_message_session(session,
+                f"❌ <b>[{escape_html(session.name)}]</b> Failed to send clear command",
+                parse_mode='HTML'
+            )
         return True
 
     # -------------------------------------------------------------------------
@@ -1482,14 +1607,23 @@ def handle_command_session(command: str, from_user: str, message_id: int,
     # -------------------------------------------------------------------------
     elif cmd == '/compact':
         if not tmux_session_exists_for(session.tmux_session):
-            send_message_session(session, f"❌ [{session.name}] tmux session not found")
+            send_message_session(session,
+                f"❌ <b>[{escape_html(session.name)}]</b> tmux session not found",
+                parse_mode='HTML'
+            )
             return True
 
-        send_message_session(session, f"📦 [{session.name}] Compacting context...")
+        send_message_session(session,
+            f"📦 <b>[{escape_html(session.name)}]</b> Compacting context...",
+            parse_mode='HTML'
+        )
         if inject_to_tmux_session(session, '/compact'):
             log_session(session, "Compact command sent to Claude")
         else:
-            send_message_session(session, f"❌ [{session.name}] Failed to send compact command")
+            send_message_session(session,
+                f"❌ <b>[{escape_html(session.name)}]</b> Failed to send compact command",
+                parse_mode='HTML'
+            )
         return True
 
     # -------------------------------------------------------------------------
@@ -1499,21 +1633,34 @@ def handle_command_session(command: str, from_user: str, message_id: int,
         script = CLAUDE_HOME / 'hooks' / 'telegram-preview.sh'
 
         if not script.exists():
-            send_message_session(session, f"❌ [{session.name}] Preview script not found")
+            send_message_session(session,
+                f"❌ <b>[{escape_html(session.name)}]</b> Preview script not found",
+                parse_mode='HTML'
+            )
             return True
 
         if args.lower() == 'help':
             output = run_script_session(session, str(script), 'help')
-            send_message_session(session, f"📺 [{session.name}] Preview Help\n\n{output[:3500]}")
+            send_message_session(session,
+                f"📺 <b>[{escape_html(session.name)}] Preview Help</b>\n\n"
+                f"<pre>{escape_html(output[:3500])}</pre>",
+                parse_mode='HTML'
+            )
             return True
 
-        send_message_session(session, f"📺 [{session.name}] Generating preview...")
+        send_message_session(session,
+            f"📺 <b>[{escape_html(session.name)}]</b> Generating preview...",
+            parse_mode='HTML'
+        )
         output = run_script_session(session, str(script), args)
 
         if 'Error' in output or 'error' in output.lower():
             if message_id:
                 set_message_reaction_session(session, message_id, "😱")
-            send_message_session(session, f"⚠️ [{session.name}] {output[:1000]}")
+            send_message_session(session,
+                f"⚠️ <b>[{escape_html(session.name)}]</b> {escape_html(output[:1000])}",
+                parse_mode='HTML'
+            )
         else:
             if message_id:
                 set_message_reaction_session(session, message_id, "👀")
@@ -1527,7 +1674,10 @@ def handle_command_session(command: str, from_user: str, message_id: int,
         script = CLAUDE_HOME / 'hooks' / 'remote-notify.sh'
 
         if not script.exists():
-            send_message_session(session, f"❌ [{session.name}] Notify script not found")
+            send_message_session(session,
+                f"❌ <b>[{escape_html(session.name)}]</b> Notify script not found",
+                parse_mode='HTML'
+            )
             return True
 
         valid_subcmds = ['on', 'off', 'status', 'config', 'start', 'stop', 'help']
@@ -1535,9 +1685,11 @@ def handle_command_session(command: str, from_user: str, message_id: int,
 
         if subcmd not in valid_subcmds:
             send_message_session(session,
-                f"❌ [{session.name}] Unknown subcommand: {subcmd}\n\n"
+                f"❌ <b>[{escape_html(session.name)}]</b> Unknown subcommand: "
+                f"<code>{escape_html(subcmd)}</code>\n\n"
                 f"Valid: {', '.join(valid_subcmds)}\n"
-                "Try: /notify help"
+                "Try: /notify help",
+                parse_mode='HTML'
             )
             return True
 
@@ -1547,10 +1699,17 @@ def handle_command_session(command: str, from_user: str, message_id: int,
             try:
                 notify_flag.touch()
                 log_session(session, f"Notifications enabled (flag: {notify_flag})")
-                send_message_session(session, f"🔔 [{session.name}] Notifications enabled (global)")
+                send_message_session(session,
+                    f"🔔 <b>[{escape_html(session.name)}]</b> Notifications enabled (global)",
+                    parse_mode='HTML'
+                )
             except Exception as e:
                 log_session(session, f"Failed to enable notifications: {e}", "ERROR")
-                send_message_session(session, f"❌ [{session.name}] Failed to enable notifications: {e}")
+                send_message_session(session,
+                    f"❌ <b>[{escape_html(session.name)}]</b> Failed to enable notifications: "
+                    f"{escape_html(str(e))}",
+                    parse_mode='HTML'
+                )
             return True
 
         if subcmd == 'off':
@@ -1558,36 +1717,61 @@ def handle_command_session(command: str, from_user: str, message_id: int,
             try:
                 notify_flag.unlink(missing_ok=True)
                 log_session(session, f"Notifications disabled (flag: {notify_flag})")
-                send_message_session(session, f"🔕 [{session.name}] Notifications disabled (global)")
+                send_message_session(session,
+                    f"🔕 <b>[{escape_html(session.name)}]</b> Notifications disabled (global)",
+                    parse_mode='HTML'
+                )
             except Exception as e:
                 log_session(session, f"Failed to disable notifications: {e}", "ERROR")
-                send_message_session(session, f"❌ [{session.name}] Failed to disable notifications: {e}")
+                send_message_session(session,
+                    f"❌ <b>[{escape_html(session.name)}]</b> Failed to disable notifications: "
+                    f"{escape_html(str(e))}",
+                    parse_mode='HTML'
+                )
             return True
 
         # Handle stop - pause THIS session only
         if subcmd == 'stop':
             session.paused = True
             log_session(session, "Stop command received - session paused")
-            send_message_session(session, f"⏸️ [{session.name}] Session paused. Send /notify start to resume.")
+            send_message_session(session,
+                f"⏸️ <b>[{escape_html(session.name)}]</b> Session paused. "
+                "Send /notify start to resume.",
+                parse_mode='HTML'
+            )
             return True
 
         # Handle start - resume THIS session
         if subcmd == 'start':
             if not session.paused:
-                send_message_session(session, f"✅ [{session.name}] Session already running")
+                send_message_session(session,
+                    f"✅ <b>[{escape_html(session.name)}]</b> Session already running",
+                    parse_mode='HTML'
+                )
             else:
                 session.paused = False
                 log_session(session, "Start command received - session resumed")
-                send_message_session(session, f"▶️ [{session.name}] Session resumed")
+                send_message_session(session,
+                    f"▶️ <b>[{escape_html(session.name)}]</b> Session resumed",
+                    parse_mode='HTML'
+                )
             return True
 
         output = run_script_session(session, str(script), subcmd)
         output = re.sub(r'\x1b\[[0-9;]*m', '', output)
 
         if subcmd == 'help':
-            send_message_session(session, f"🔔 [{session.name}] Notify Help\n\n{output[:3500]}")
+            send_message_session(session,
+                f"🔔 <b>[{escape_html(session.name)}] Notify Help</b>\n\n"
+                f"<pre>{escape_html(output[:3500])}</pre>",
+                parse_mode='HTML'
+            )
         else:
-            send_message_session(session, f"🔔 [{session.name}] {subcmd.title()}\n\n{output[:2000]}")
+            send_message_session(session,
+                f"🔔 <b>[{escape_html(session.name)}] {escape_html(subcmd.title())}</b>\n\n"
+                f"<pre>{escape_html(output[:2000])}</pre>",
+                parse_mode='HTML'
+            )
 
         return True
 
@@ -1749,6 +1933,35 @@ def run_multi_session():
 
             for update in updates:
                 offset = update['update_id'] + 1
+
+                # Handle callback_query (inline keyboard button clicks)
+                callback_query = update.get('callback_query')
+                if callback_query:
+                    cb_id = callback_query.get('id')
+                    cb_data = callback_query.get('data', '')
+                    cb_message = callback_query.get('message', {})
+                    cb_topic_id = str(cb_message.get('message_thread_id', ''))
+
+                    cb_session = manager.get_session_by_topic(cb_topic_id) if cb_topic_id else None
+
+                    if cb_session and cb_data.startswith('opt:'):
+                        parts = cb_data.split(':')
+                        option_num = parts[-1] if len(parts) >= 3 else ''
+                        from_chat = str(cb_message.get('chat', {}).get('id', ''))
+
+                        if from_chat == cb_session.chat_id and option_num and not cb_session.paused:
+                            if inject_to_tmux_session(cb_session, option_num):
+                                answer_callback_query_session(cb_session, cb_id, f"Sent: {option_num}")
+                            else:
+                                answer_callback_query_session(cb_session, cb_id, "Failed: session not found")
+                        else:
+                            answer_callback_query_session(cb_session, cb_id,
+                                "Session paused" if cb_session and cb_session.paused else "")
+                    else:
+                        if cb_session:
+                            answer_callback_query_session(cb_session, cb_id)
+                    continue
+
                 message = update.get('message', {})
 
                 # Get topic ID from message
@@ -1792,10 +2005,16 @@ def run_multi_session():
                             set_message_reaction_session(session, message_id, "👀")
                         else:
                             set_message_reaction_session(session, message_id, "😱")
-                            send_message_session(session, f"❌ [{session.name}] Failed (session not found)")
+                            send_message_session(session,
+                                f"❌ <b>[{escape_html(session.name)}]</b> Failed (session not found)",
+                                parse_mode='HTML'
+                            )
                     else:
                         set_message_reaction_session(session, message_id, "😱")
-                        send_message_session(session, f"❌ [{session.name}] {inject_text}")
+                        send_message_session(session,
+                            f"❌ <b>[{escape_html(session.name)}]</b> {escape_html(inject_text)}",
+                            parse_mode='HTML'
+                        )
                     continue
 
                 if not text:
@@ -1813,7 +2032,10 @@ def run_multi_session():
                     set_message_reaction_session(session, message_id, "👀")
                 else:
                     set_message_reaction_session(session, message_id, "😱")
-                    send_message_session(session, f"❌ [{session.name}] Failed (session not found)")
+                    send_message_session(session,
+                        f"❌ <b>[{escape_html(session.name)}]</b> Failed (session not found)",
+                        parse_mode='HTML'
+                    )
 
             if not updates:
                 time.sleep(0.5)
@@ -1932,12 +2154,20 @@ def list_sessions():
 def notify_crash(attempt, max_attempts, error_msg):
     """Send notification about listener crash"""
     if attempt >= max_attempts:
-        msg = f"❌ [{SESSION_NAME}] Listener crashed after {max_attempts} attempts!\n\nLast error: {error_msg}\n\nRestart manually with:\n/remote-notify start"
+        msg = (
+            f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Listener crashed after {max_attempts} attempts!\n\n"
+            f"<b>Last error:</b>\n<pre>{escape_html(error_msg)}</pre>\n\n"
+            "Restart manually with:\n/remote-notify start"
+        )
     else:
-        msg = f"⚠️ [{SESSION_NAME}] Listener restarting (attempt {attempt + 1}/{max_attempts})\n\nError: {error_msg}"
-    
+        msg = (
+            f"⚠️ <b>[{escape_html(SESSION_NAME)}]</b> Listener restarting "
+            f"(attempt {attempt + 1}/{max_attempts})\n\n"
+            f"<b>Error:</b>\n<pre>{escape_html(error_msg)}</pre>"
+        )
+
     try:
-        send_message(msg)
+        send_message(msg, parse_mode='HTML')
     except:
         pass  # Best effort
 
@@ -1957,9 +2187,32 @@ def run_listener():
             
             for update in updates:
                 offset = update['update_id'] + 1
-                
+
+                # Handle callback_query (inline keyboard button clicks)
+                callback_query = update.get('callback_query')
+                if callback_query:
+                    cb_id = callback_query.get('id')
+                    cb_data = callback_query.get('data', '')
+                    cb_message = callback_query.get('message', {})
+
+                    if cb_data.startswith('opt:'):
+                        parts = cb_data.split(':')
+                        option_num = parts[-1] if len(parts) >= 3 else ''
+                        from_chat = str(cb_message.get('chat', {}).get('id', ''))
+
+                        if from_chat == str(CHAT_ID) and option_num:
+                            if inject_to_tmux(option_num):
+                                answer_callback_query(cb_id, f"Sent: {option_num}")
+                            else:
+                                answer_callback_query(cb_id, "Failed: session not found")
+                        else:
+                            answer_callback_query(cb_id)
+                    else:
+                        answer_callback_query(cb_id)
+                    continue
+
                 message = update.get('message', {})
-                
+
                 # Check if we should process this message
                 if not should_process_message(message):
                     continue
@@ -1990,11 +2243,17 @@ def run_listener():
                             set_message_reaction(message_id, "👀")
                         else:
                             set_message_reaction(message_id, "😱")
-                            send_message(f"❌ [{SESSION_NAME}] Failed (session not found)")
+                            send_message(
+                                f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Failed (session not found)",
+                                parse_mode='HTML'
+                            )
                     else:
                         # Media handling failed - send error message
                         set_message_reaction(message_id, "😱")
-                        send_message(f"❌ [{SESSION_NAME}] {inject_text}")
+                        send_message(
+                            f"❌ <b>[{escape_html(SESSION_NAME)}]</b> {escape_html(inject_text)}",
+                            parse_mode='HTML'
+                        )
                     continue
 
                 # Handle text messages (text already extracted above for pause check)
@@ -2010,13 +2269,13 @@ def run_listener():
 
                 # Inject into tmux
                 if inject_to_tmux(text):
-                    # React with 👀 to acknowledge receipt (no noisy "Sent" message)
-                    # Note: Telegram only allows specific emojis as reactions
                     set_message_reaction(message_id, "👀")
                 else:
-                    # Failure: react with 😱 and send error message
                     set_message_reaction(message_id, "😱")
-                    send_message(f"❌ [{SESSION_NAME}] Failed (session not found)")
+                    send_message(
+                        f"❌ <b>[{escape_html(SESSION_NAME)}]</b> Failed (session not found)",
+                        parse_mode='HTML'
+                    )
             
             if not updates:
                 time.sleep(0.5)

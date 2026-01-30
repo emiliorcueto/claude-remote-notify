@@ -138,39 +138,101 @@ case "$EVENT_TYPE" in
         ;;
 esac
 
-# Build the message with session identifier
-MESSAGE="$EMOJI [$SESSION_NAME] $HEADER
+# HTML-escape context (user-generated content)
+if type html_escape &>/dev/null; then
+    ESCAPED_CONTEXT=$(html_escape "$CONTEXT")
+    ESCAPED_SESSION=$(html_escape "$SESSION_NAME")
+else
+    # Fallback: inline escaping
+    ESCAPED_CONTEXT="${CONTEXT//&/&amp;}"
+    ESCAPED_CONTEXT="${ESCAPED_CONTEXT//</&lt;}"
+    ESCAPED_CONTEXT="${ESCAPED_CONTEXT//>/&gt;}"
+    ESCAPED_SESSION="${SESSION_NAME//&/&amp;}"
+    ESCAPED_SESSION="${ESCAPED_SESSION//</&lt;}"
+    ESCAPED_SESSION="${ESCAPED_SESSION//>/&gt;}"
+fi
+
+# Build HTML message with session identifier
+MESSAGE="$EMOJI <b>[$ESCAPED_SESSION] $HEADER</b>
 ⏰ $(date '+%H:%M:%S')
 
-$CONTEXT
+<pre>$ESCAPED_CONTEXT</pre>
 
 💬 Reply here to send input"
 
-# Build curl arguments
-CURL_ARGS=(
-    -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
-    -d "chat_id=$TELEGRAM_CHAT_ID"
-    --data-urlencode "text=$MESSAGE"
-)
+# Try sending with inline keyboard if options detected (Python + requests)
+KEYBOARD_SENT=false
+python3 -c '
+import sys, json, re
+try:
+    import requests
+except ImportError:
+    sys.exit(2)
 
-# Add topic ID if configured (for Forum groups)
-if [ -n "$TOPIC_ID" ]; then
-    CURL_ARGS+=(-d "message_thread_id=$TOPIC_ID")
+message, bot_token, chat_id = sys.argv[1], sys.argv[2], sys.argv[3]
+topic_id = sys.argv[4] if len(sys.argv) > 4 else ""
+session_name = sys.argv[5] if len(sys.argv) > 5 else "default"
+
+pattern = re.compile(r"^\s*(?:(\d+)[.\)]\s+|#(\d+)\s+|\((\d+)\)\s+)(.+)$", re.MULTILINE)
+matches = pattern.findall(message)
+
+if len(matches) < 2:
+    sys.exit(1)  # No options - fall back to curl
+
+buttons = []
+for match in matches[:8]:
+    num = match[0] or match[1] or match[2]
+    text = match[3].strip()
+    label = f"{num}. {text[:37]}..." if len(text) > 37 else f"{num}. {text}"
+    buttons.append([{"text": label, "callback_data": f"opt:{session_name[:40]}:{num}"}])
+
+data = {
+    "chat_id": chat_id,
+    "text": message,
+    "parse_mode": "HTML",
+    "reply_markup": json.dumps({"inline_keyboard": buttons})
+}
+if topic_id:
+    data["message_thread_id"] = topic_id
+
+resp = requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=data, timeout=10)
+sys.exit(0 if resp.json().get("ok") else 1)
+' "$MESSAGE" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$TOPIC_ID" "$SESSION_NAME" 2>/dev/null
+
+PYTHON_EXIT=$?
+if [ $PYTHON_EXIT -eq 0 ]; then
+    KEYBOARD_SENT=true
 fi
 
-# Send to Telegram with error handling
-ERROR_LOG="$CLAUDE_HOME/logs/notify-errors.log"
-mkdir -p "$(dirname "$ERROR_LOG")"
+# Fallback: send via curl without keyboard (or if Python failed)
+if [ "$KEYBOARD_SENT" = "false" ]; then
+    # Build curl arguments
+    CURL_ARGS=(
+        -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+        -d "chat_id=$TELEGRAM_CHAT_ID"
+        -d "parse_mode=HTML"
+        --data-urlencode "text=$MESSAGE"
+    )
 
-RESPONSE=$(curl "${CURL_ARGS[@]}" 2>&1)
-CURL_EXIT=$?
+    # Add topic ID if configured (for Forum groups)
+    if [ -n "$TOPIC_ID" ]; then
+        CURL_ARGS+=(-d "message_thread_id=$TOPIC_ID")
+    fi
 
-if [ $CURL_EXIT -ne 0 ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] curl exit $CURL_EXIT" >> "$ERROR_LOG"
-fi
+    # Send to Telegram with error handling
+    ERROR_LOG="$CLAUDE_HOME/logs/notify-errors.log"
+    mkdir -p "$(dirname "$ERROR_LOG")"
 
-if ! echo "$RESPONSE" | grep -q '"ok":true'; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] API error: $RESPONSE" >> "$ERROR_LOG"
+    RESPONSE=$(curl "${CURL_ARGS[@]}" 2>&1)
+    CURL_EXIT=$?
+
+    if [ $CURL_EXIT -ne 0 ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] curl exit $CURL_EXIT" >> "$ERROR_LOG"
+    fi
+
+    if ! echo "$RESPONSE" | grep -q '"ok":true'; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] API error: $RESPONSE" >> "$ERROR_LOG"
+    fi
 fi
 
 exit 0

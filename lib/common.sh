@@ -408,6 +408,20 @@ urlencode_shell() {
 }
 
 # =============================================================================
+# HTML ESCAPING
+# =============================================================================
+
+# Escape HTML special characters for Telegram parse_mode=HTML
+# Usage: escaped=$(html_escape "$text")
+html_escape() {
+    local text="$1"
+    text="${text//&/&amp;}"
+    text="${text//</&lt;}"
+    text="${text//>/&gt;}"
+    echo "$text"
+}
+
+# =============================================================================
 # TELEGRAM FORMATTING
 # =============================================================================
 
