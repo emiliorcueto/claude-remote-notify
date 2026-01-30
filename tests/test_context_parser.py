@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
 from context_parser import (
     classify_line, extract_notification_context,
-    CODE, DIFF, FILE_PATH, PROMPT, UI, OPTION, BULLET, TEXT, EMPTY
+    CODE, DIFF, FILE_PATH, PROMPT, OPTION, BULLET, TEXT, EMPTY
 )
 
 
@@ -111,43 +111,6 @@ class TestClassifyLine:
     def test_not_file_path_plain(self):
         """Plain text mentioning a path without separator should be TEXT."""
         assert classify_line('Updated the auth module') == TEXT
-
-    # UI line classification tests
-
-    def test_ui_tool_call(self):
-        assert classify_line('⏺ Bash(cd "..." && git status)') == UI
-
-    def test_ui_tool_output(self):
-        assert classify_line('  ⎿  Running…') == UI
-
-    def test_ui_spinner_whirring(self):
-        assert classify_line('✻ Whirring... (esc to interrupt · 4m 42s)') == UI
-
-    def test_ui_spinner_orchestrating(self):
-        assert classify_line('✢ Orchestrating… (esc to interrupt)') == UI
-
-    def test_ui_shell_prompt_chevron(self):
-        assert classify_line('❯ ') == UI
-
-    def test_ui_shell_prompt_arrow(self):
-        assert classify_line('  ➜  my-repo git:(main)') == UI
-
-    def test_ui_accept_edits(self):
-        assert classify_line('  ⏵⏵ accept edits on (shift+Tab to cycle)') == UI
-
-    def test_ui_horizontal_rule(self):
-        assert classify_line('─' * 40) == UI
-
-    def test_ui_bold_horizontal_rule(self):
-        assert classify_line('━' * 40) == UI
-
-    def test_ui_esc_to_interrupt_mid_line(self):
-        """Lines containing 'esc to interrupt' are UI regardless of prefix."""
-        assert classify_line('· Whirring... (esc to interrupt · 2m · ↓ 23 tokens)') == UI
-
-    def test_ui_does_not_match_plain_text(self):
-        """Regular text should not be classified as UI."""
-        assert classify_line('All tests passed successfully') == TEXT
 
 
 class TestExtractNotificationContext:
@@ -363,25 +326,19 @@ class TestEdgeCases:
         # Should not have more than one consecutive blank line
         assert '\n\n\n' not in result
 
-    def test_trailing_terminal_ui_stripped(self):
-        """Terminal UI chrome at the bottom should be skipped."""
+    def test_trailing_terminal_status_bar_stripped(self):
+        """Terminal UI lines with []() at the bottom should be skipped."""
         text = (
             "Some old text\n"
             "Want to continue?\n"
-            "⏺ Bash(git status)\n"
-            "  ⎿  Running…\n"
-            "✻ Whirring... (esc to interrupt · 4m 42s · ↓ 23 tokens)\n"
-            "❯ \n"
             "  ➜  my-repo git:(main) [Opus 4.5] [37%]\n"
             "  ⏵⏵ accept edits (shift+Tab)\n"
             "> _"
         )
         result = extract_notification_context(text)
         assert 'Want to continue?' in result
-        assert 'Whirring' not in result
-        assert 'Running' not in result
-        assert 'accept edits' not in result
         assert 'Opus 4.5' not in result
+        assert 'accept edits' not in result
 
     def test_fallback_returns_bottom_not_top(self):
         """When fallback triggers, it should return bottom content."""
