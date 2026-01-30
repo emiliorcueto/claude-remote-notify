@@ -182,6 +182,8 @@ $CONTEXT_BLOCK
 
 # Try sending with inline keyboard if options detected (Python + requests)
 KEYBOARD_SENT=false
+# Note: Python exits 1 when no options found (intentional fallback to curl).
+# || true prevents set -e from aborting the script.
 python3 -c '
 import sys, json, re
 try:
@@ -217,12 +219,7 @@ if topic_id:
 
 resp = requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=data, timeout=10)
 sys.exit(0 if resp.json().get("ok") else 1)
-' "$MESSAGE" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$TOPIC_ID" "$SESSION_NAME" 2>/dev/null
-
-PYTHON_EXIT=$?
-if [ $PYTHON_EXIT -eq 0 ]; then
-    KEYBOARD_SENT=true
-fi
+' "$MESSAGE" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$TOPIC_ID" "$SESSION_NAME" 2>/dev/null && KEYBOARD_SENT=true || true
 
 # Fallback: send via curl without keyboard (or if Python failed)
 if [ "$KEYBOARD_SENT" = "false" ]; then

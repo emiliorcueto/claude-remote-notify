@@ -205,7 +205,7 @@ install_files() {
     # Install shared library
     if [ -d "$SCRIPT_DIR/lib" ]; then
         mkdir -p "$CLAUDE_HOME/lib"
-        for lib in "$SCRIPT_DIR"/lib/*.sh; do
+        for lib in "$SCRIPT_DIR"/lib/*.sh "$SCRIPT_DIR"/lib/*.py; do
             if [ -f "$lib" ]; then
                 local libname=$(basename "$lib")
                 if install_file "$lib" "$CLAUDE_HOME/lib/$libname" false; then
