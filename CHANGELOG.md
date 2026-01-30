@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- Smart notification context parsing (Issue #25)
+  - Extracts natural language text from terminal context (questions, summaries, options, bullets)
+  - Omits code blocks, diffs, file paths, and prompt lines
+  - Line classification: CODE, DIFF, FILE_PATH, PROMPT, OPTION, BULLET, TEXT, EMPTY
+  - Code signals: `{}[]();`, keywords (`import`, `def`, `class`, `function`, `const`, `let`, `var`, `return`, `if`, `else`, `for`, `while`), operators (`=>`, `->`, `&&`, `||`)
+  - Backwards extraction from most recent content
+  - Graceful fallback to `<pre>` block when parser unavailable
+  - Removes timestamp from notifications (Telegram already shows message time)
 - HTML message formatting + inline keyboard buttons (Issue #24)
   - All outgoing messages use Telegram HTML parse_mode (bold headers, code blocks, pre-formatted output)
   - Inline keyboard buttons when 2+ numbered options detected in notifications

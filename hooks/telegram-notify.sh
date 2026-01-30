@@ -110,12 +110,27 @@ get_terminal_context() {
 
 RAW_CONTEXT=$(get_terminal_context "$TMUX_SESSION")
 
-# Format context for Telegram readability (strip ANSI, convert tables to bullets)
+# Stage 1: Format context for Telegram readability (strip ANSI, convert tables to bullets)
 if type format_for_telegram &>/dev/null; then
-    CONTEXT=$(format_for_telegram "$RAW_CONTEXT")
+    CLEANED_CONTEXT=$(format_for_telegram "$RAW_CONTEXT")
 else
     # Fallback: basic ANSI stripping if lib not loaded
-    CONTEXT=$(echo "$RAW_CONTEXT" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
+    CLEANED_CONTEXT=$(echo "$RAW_CONTEXT" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
+fi
+
+# Stage 2: Extract natural language context (omit code, diffs, file paths)
+CONTEXT_PARSER="$LIB_DIR/context_parser.py"
+USE_PRE=true
+if [ -f "$CONTEXT_PARSER" ]; then
+    PARSED_CONTEXT=$(python3 "$CONTEXT_PARSER" "$CLEANED_CONTEXT" 2>/dev/null) || true
+    if [ -n "$PARSED_CONTEXT" ]; then
+        CONTEXT="$PARSED_CONTEXT"
+        USE_PRE=false
+    else
+        CONTEXT="$CLEANED_CONTEXT"
+    fi
+else
+    CONTEXT="$CLEANED_CONTEXT"
 fi
 
 # Determine emoji and header based on event type
@@ -152,11 +167,16 @@ else
     ESCAPED_SESSION="${ESCAPED_SESSION//>/&gt;}"
 fi
 
-# Build HTML message with session identifier
-MESSAGE="$EMOJI <b>[$ESCAPED_SESSION] $HEADER</b>
-⏰ $(date '+%H:%M:%S')
+# Build HTML message — plain text when parsed, <pre> as fallback
+if [ "$USE_PRE" = "true" ]; then
+    CONTEXT_BLOCK="<pre>$ESCAPED_CONTEXT</pre>"
+else
+    CONTEXT_BLOCK="$ESCAPED_CONTEXT"
+fi
 
-<pre>$ESCAPED_CONTEXT</pre>
+MESSAGE="$EMOJI <b>[$ESCAPED_SESSION] $HEADER</b>
+
+$CONTEXT_BLOCK
 
 💬 Reply here to send input"
 
