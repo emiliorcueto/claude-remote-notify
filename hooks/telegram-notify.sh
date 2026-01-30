@@ -46,7 +46,7 @@ CONFIG_FILE="$SESSIONS_DIR/$SESSION_NAME.conf"
 GLOBAL_CONFIG="$CLAUDE_HOME/telegram-remote.conf"
 NOTIFY_FLAG_FILE="$CLAUDE_HOME/notifications-enabled"
 TMUX_SESSION="${TMUX_SESSION:-claude-$SESSION_NAME}"
-CONTEXT_LINES=30
+CONTEXT_LINES=15
 
 # -----------------------------------------------------------------------------
 # Check if notifications are enabled
@@ -110,27 +110,12 @@ get_terminal_context() {
 
 RAW_CONTEXT=$(get_terminal_context "$TMUX_SESSION")
 
-# Stage 1: Format context for Telegram readability (strip ANSI, convert tables to bullets)
+# Format context for Telegram readability (strip ANSI, convert tables to bullets)
 if type format_for_telegram &>/dev/null; then
-    CLEANED_CONTEXT=$(format_for_telegram "$RAW_CONTEXT")
+    CONTEXT=$(format_for_telegram "$RAW_CONTEXT")
 else
     # Fallback: basic ANSI stripping if lib not loaded
-    CLEANED_CONTEXT=$(echo "$RAW_CONTEXT" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
-fi
-
-# Stage 2: Extract natural language context (omit code, diffs, file paths)
-CONTEXT_PARSER="$LIB_DIR/context_parser.py"
-USE_PRE=true
-if [ -f "$CONTEXT_PARSER" ]; then
-    PARSED_CONTEXT=$(python3 "$CONTEXT_PARSER" "$CLEANED_CONTEXT" 2>/dev/null) || true
-    if [ -n "$PARSED_CONTEXT" ]; then
-        CONTEXT="$PARSED_CONTEXT"
-        USE_PRE=false
-    else
-        CONTEXT="$CLEANED_CONTEXT"
-    fi
-else
-    CONTEXT="$CLEANED_CONTEXT"
+    CONTEXT=$(echo "$RAW_CONTEXT" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
 fi
 
 # Determine emoji and header based on event type
@@ -167,18 +152,11 @@ else
     ESCAPED_SESSION="${ESCAPED_SESSION//>/&gt;}"
 fi
 
-# Build HTML message — plain text when parsed, <pre> as fallback
-if [ "$USE_PRE" = "true" ]; then
-    CONTEXT_BLOCK="<pre>$ESCAPED_CONTEXT</pre>"
-else
-    CONTEXT_BLOCK="$ESCAPED_CONTEXT"
-fi
-
 MESSAGE="$EMOJI <b>[$ESCAPED_SESSION] $HEADER</b>
 
-$CONTEXT_BLOCK
+<pre>$ESCAPED_CONTEXT</pre>
 
-💬 Reply here to send input"
+💬 Reply here or /preview for full context"
 
 # Try sending with inline keyboard if options detected (Python + requests)
 KEYBOARD_SENT=false
