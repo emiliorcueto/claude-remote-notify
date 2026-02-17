@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- Fix /preview doubled response (Issue #29)
+  - Remove "Generating preview..." intermediary message from both single-session and multi-session handlers
+  - Only 👀 reaction + HTML document sent (one response instead of two)
+- Add notification debounce (Issue #29)
+  - Configurable delay via `NOTIFY_DEBOUNCE` in session config (default 20s)
+  - Each hook call resets the timer; only the last notification in a burst is sent
+  - `NOTIFY_DEBOUNCE=0` disables debounce (sends immediately)
+  - File-based PID tracking with background sender process
+
 ### Added
 - Topic ID as alternative session identifier (Issue #27)
   - `claude-remote 70` resolves topic ID to session name

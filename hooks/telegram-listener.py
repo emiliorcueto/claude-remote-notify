@@ -1347,11 +1347,7 @@ def handle_command(command, from_user, message_id=None):
             )
             return True
 
-        # For actual preview, the script sends the file directly to Telegram
-        send_message(
-            f"📺 <b>[{escape_html(SESSION_NAME)}]</b> Generating preview...",
-            parse_mode='HTML'
-        )
+        # The preview script sends the file directly to Telegram
         output = run_script(str(script), args)
 
         # If there was an error (script outputs to stderr), report it
@@ -1671,10 +1667,7 @@ def handle_command_session(command: str, from_user: str, message_id: int,
             )
             return True
 
-        send_message_session(session,
-            f"📺 <b>[{escape_html(session.name)}]</b> Generating preview...",
-            parse_mode='HTML'
-        )
+        # The preview script sends the file directly to Telegram
         output = run_script_session(session, str(script), args)
 
         if 'Error' in output or 'error' in output.lower():

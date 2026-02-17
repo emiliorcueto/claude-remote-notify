@@ -6,6 +6,10 @@
 # Supports Telegram Topics (Forum Mode) for multiple Claude sessions.
 # Each session posts to its own topic thread.
 #
+# Debounce: Notifications are delayed by NOTIFY_DEBOUNCE seconds (default 20).
+# Each new hook call resets the timer. Only the last notification in a burst
+# is sent. Set NOTIFY_DEBOUNCE=0 in session config to disable.
+#
 # Usage:
 #   telegram-notify.sh [event-type] [--session NAME]
 #
@@ -88,6 +92,9 @@ fi
 # Topic ID is optional (for single-session setups)
 TOPIC_ID="${TELEGRAM_TOPIC_ID:-}"
 
+# Debounce delay (seconds). Set NOTIFY_DEBOUNCE=0 in config to disable.
+DEBOUNCE_SECONDS="${NOTIFY_DEBOUNCE:-20}"
+
 # -----------------------------------------------------------------------------
 # Capture terminal context
 # -----------------------------------------------------------------------------
@@ -105,7 +112,7 @@ get_terminal_context() {
 }
 
 # -----------------------------------------------------------------------------
-# Send notification
+# Build notification message
 # -----------------------------------------------------------------------------
 
 RAW_CONTEXT=$(get_terminal_context "$TMUX_SESSION")
@@ -158,13 +165,18 @@ MESSAGE="$EMOJI <b>[$ESCAPED_SESSION] $HEADER</b>
 
 💬 Reply here or /preview for full context"
 
-# Try sending with inline keyboard if options detected (Python + requests)
-KEYBOARD_SENT=false
-# Note: Python exits 1 when no options found (intentional fallback to curl).
-# || true prevents set -e from aborting the script.
-mkdir -p "$CLAUDE_HOME/logs"
-KEYBOARD_LOG="$CLAUDE_HOME/logs/keyboard-debug.log"
-python3 -c '
+# -----------------------------------------------------------------------------
+# Send notification (Python keyboard attempt + curl fallback)
+# -----------------------------------------------------------------------------
+
+send_notification() {
+    # Try sending with inline keyboard if options detected (Python + requests)
+    local KEYBOARD_SENT=false
+    # Note: Python exits 1 when no options found (intentional fallback to curl).
+    # || true prevents set -e from aborting the script.
+    mkdir -p "$CLAUDE_HOME/logs"
+    local KEYBOARD_LOG="$CLAUDE_HOME/logs/keyboard-debug.log"
+    python3 -c '
 import sys, json, re
 from datetime import datetime
 
@@ -236,35 +248,68 @@ except Exception as e:
     sys.exit(1)
 ' "$MESSAGE" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$TOPIC_ID" "$SESSION_NAME" 2>>"$KEYBOARD_LOG" && KEYBOARD_SENT=true || true
 
-# Fallback: send via curl without keyboard (or if Python failed)
-if [ "$KEYBOARD_SENT" = "false" ]; then
-    # Build curl arguments
-    CURL_ARGS=(
-        -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
-        -d "chat_id=$TELEGRAM_CHAT_ID"
-        -d "parse_mode=HTML"
-        --data-urlencode "text=$MESSAGE"
-    )
+    # Fallback: send via curl without keyboard (or if Python failed)
+    if [ "$KEYBOARD_SENT" = "false" ]; then
+        # Build curl arguments
+        local CURL_ARGS=(
+            -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+            -d "chat_id=$TELEGRAM_CHAT_ID"
+            -d "parse_mode=HTML"
+            --data-urlencode "text=$MESSAGE"
+        )
 
-    # Add topic ID if configured (for Forum groups)
-    if [ -n "$TOPIC_ID" ]; then
-        CURL_ARGS+=(-d "message_thread_id=$TOPIC_ID")
+        # Add topic ID if configured (for Forum groups)
+        if [ -n "$TOPIC_ID" ]; then
+            CURL_ARGS+=(-d "message_thread_id=$TOPIC_ID")
+        fi
+
+        # Send to Telegram with error handling
+        local ERROR_LOG="$CLAUDE_HOME/logs/notify-errors.log"
+        mkdir -p "$(dirname "$ERROR_LOG")"
+
+        local RESPONSE
+        RESPONSE=$(curl "${CURL_ARGS[@]}" 2>&1)
+        local CURL_EXIT=$?
+
+        if [ $CURL_EXIT -ne 0 ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] curl exit $CURL_EXIT" >> "$ERROR_LOG"
+        fi
+
+        if ! echo "$RESPONSE" | grep -q '"ok":true'; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] API error: $RESPONSE" >> "$ERROR_LOG"
+        fi
     fi
+}
 
-    # Send to Telegram with error handling
-    ERROR_LOG="$CLAUDE_HOME/logs/notify-errors.log"
-    mkdir -p "$(dirname "$ERROR_LOG")"
+# -----------------------------------------------------------------------------
+# Debounce logic
+# -----------------------------------------------------------------------------
 
-    RESPONSE=$(curl "${CURL_ARGS[@]}" 2>&1)
-    CURL_EXIT=$?
+PENDING_DIR="$CLAUDE_HOME/notifications-pending"
+PENDING_PID="$PENDING_DIR/$SESSION_NAME.pid"
+mkdir -p "$PENDING_DIR"
 
-    if [ $CURL_EXIT -ne 0 ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] curl exit $CURL_EXIT" >> "$ERROR_LOG"
+# Kill previous pending sender if exists
+if [ -f "$PENDING_PID" ]; then
+    OLD_PID=$(cat "$PENDING_PID" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        kill "$OLD_PID" 2>/dev/null || true
     fi
-
-    if ! echo "$RESPONSE" | grep -q '"ok":true'; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$SESSION_NAME] API error: $RESPONSE" >> "$ERROR_LOG"
-    fi
+    rm -f "$PENDING_PID"
 fi
 
+# If debounce disabled, send immediately
+if [ "$DEBOUNCE_SECONDS" -eq 0 ] 2>/dev/null; then
+    send_notification
+    exit 0
+fi
+
+# Spawn background sender: sleep then send
+(
+    sleep "$DEBOUNCE_SECONDS"
+    send_notification
+    rm -f "$PENDING_PID"
+) &
+
+echo $! > "$PENDING_PID"
 exit 0
