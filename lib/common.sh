@@ -233,7 +233,7 @@ log_error() { [ "$LOG_LEVEL" -le "$LOG_LEVEL_ERROR" ] && echo -e "${_LOG_RED}[ER
 # =============================================================================
 
 # Allowed config keys (whitelist)
-_ALLOWED_CONFIG_KEYS="TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_TOPIC_ID TMUX_SESSION"
+_ALLOWED_CONFIG_KEYS="TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_TOPIC_ID TMUX_SESSION NOTIFY_DEBOUNCE"
 
 # Load config file safely without sourcing
 # Usage: load_config_safely "/path/to/config.conf"
@@ -309,6 +309,34 @@ load_session_config() {
         echo "Error: No config found for session '$session_name'" >&2
         return 1
     fi
+}
+
+# =============================================================================
+# NOTIFICATION CANCELLATION
+# =============================================================================
+
+# Cancel a pending delayed notification for a session.
+# Reads the PID file, kills the background sleep+send process if alive,
+# and removes the PID file.
+#
+# Usage: cancel_pending_notification "session_name" ["/path/to/claude_home"]
+# Returns: 0 if cancelled or no pending notification, 1 on error
+cancel_pending_notification() {
+    local session_name="$1"
+    local claude_home="${2:-${CLAUDE_HOME:-$HOME/.claude}}"
+    local pid_file="$claude_home/notifications-pending/$session_name.pid"
+
+    [ ! -f "$pid_file" ] && return 0
+
+    local old_pid
+    old_pid=$(cat "$pid_file" 2>/dev/null) || true
+
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        kill "$old_pid" 2>/dev/null || true
+    fi
+
+    rm -f "$pid_file"
+    return 0
 }
 
 # =============================================================================

@@ -727,6 +727,39 @@ def get_safe_env_session(session: SessionState) -> Dict[str, str]:
     return env
 
 
+def cancel_pending_notification(session_name: str, claude_home: Path = None):
+    """Cancel a pending delayed notification for a session.
+
+    Reads the PID file from notifications-pending/, kills the background
+    sleep+send process if alive, and removes the PID file.
+
+    Python equivalent of cancel_pending_notification() in lib/common.sh.
+    Kept in-process to avoid subprocess overhead on every message injection.
+    """
+    home = claude_home or CLAUDE_HOME
+    pid_file = home / 'notifications-pending' / f'{session_name}.pid'
+
+    if not pid_file.exists():
+        return
+
+    try:
+        pid_str = pid_file.read_text().strip()
+        if pid_str:
+            pid = int(pid_str)
+            try:
+                os.kill(pid, 0)  # Check if alive
+                os.kill(pid, 15)  # SIGTERM
+            except (ProcessLookupError, PermissionError):
+                pass  # Process already dead or not ours
+    except (ValueError, OSError):
+        pass  # Corrupt PID file, just clean up
+
+    try:
+        pid_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def log_session(session: SessionState, message: str, level: str = "INFO"):
     """Log message for a specific session (writes to multi log)."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -776,6 +809,7 @@ def inject_to_tmux_session(session: SessionState, text: str) -> bool:
         )
 
         log_session(session, f"Injected: {text[:50]}{'...' if len(text) > 50 else ''}")
+        cancel_pending_notification(session.name)
         return True
     except subprocess.CalledProcessError as e:
         log_session(session, f"Error injecting: {e}", "ERROR")
@@ -1120,6 +1154,7 @@ def inject_to_tmux(text):
         )
 
         log(f"Injected: {text[:50]}{'...' if len(text) > 50 else ''}")
+        cancel_pending_notification(SESSION_NAME)
         return True
     except subprocess.CalledProcessError as e:
         log(f"Error injecting: {e}", "ERROR")

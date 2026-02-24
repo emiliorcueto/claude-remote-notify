@@ -192,7 +192,7 @@ install_files() {
     }
 
     # Install hooks
-    for hook in telegram-notify.sh telegram-listener.py telegram-preview.sh remote-notify.sh; do
+    for hook in telegram-notify.sh telegram-listener.py telegram-preview.sh remote-notify.sh cancel-pending-notification.sh; do
         if install_file "$SCRIPT_DIR/hooks/$hook" "$CLAUDE_HOME/hooks/$hook" true; then
             if $DEV_MODE; then
                 success "Linked hooks/$hook"

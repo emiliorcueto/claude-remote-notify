@@ -290,13 +290,7 @@ PENDING_PID="$PENDING_DIR/$SESSION_NAME.pid"
 mkdir -p "$PENDING_DIR"
 
 # Kill previous pending sender if exists
-if [ -f "$PENDING_PID" ]; then
-    OLD_PID=$(cat "$PENDING_PID" 2>/dev/null)
-    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-        kill "$OLD_PID" 2>/dev/null || true
-    fi
-    rm -f "$PENDING_PID"
-fi
+cancel_pending_notification "$SESSION_NAME" "$CLAUDE_HOME"
 
 # If debounce disabled, send immediately
 if [ "$DEBOUNCE_SECONDS" -eq 0 ] 2>/dev/null; then

@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+- Cancel pending notification on user input (Issue #31)
+  - Telegram input (text, media, button clicks) cancels pending notification immediately
+  - Terminal input via `UserPromptSubmit` hook cancels pending notification immediately
+  - Canonical `cancel_pending_notification()` in lib/common.sh
+  - Native Python equivalent in telegram-listener.py (shared PID file protocol)
+  - Standalone `cancel-pending-notification.sh` hook for Claude Code
+
 ### Fixed
+- `NOTIFY_DEBOUNCE` config key now included in safe config loading whitelist (Issue #31)
+  - Previously silently dropped when using `load_config_safely()`, always defaulting to 20s
 - Fix /preview doubled response (Issue #29)
   - Remove "Generating preview..." intermediary message from both single-session and multi-session handlers
   - Only 👀 reaction + HTML document sent (one response instead of two)
