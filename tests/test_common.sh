@@ -1067,6 +1067,194 @@ test_format_for_telegram_preserves_markdown() {
 }
 
 # =============================================================================
+# TESTS: NOTIFICATION CANCELLATION
+# =============================================================================
+
+test_cancel_with_live_pid() {
+    echo ""
+    echo "Testing: cancel_pending_notification with live PID"
+
+    setup
+    mkdir -p "$TEMP_DIR/notifications-pending"
+
+    # Spawn a background process
+    (sleep 30) &
+    local bg_pid=$!
+    echo "$bg_pid" > "$TEMP_DIR/notifications-pending/test-session.pid"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        cancel_pending_notification "test-session" "$TEMP_DIR"
+
+        # PID file should be removed
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ ! -f "$TEMP_DIR/notifications-pending/test-session.pid" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: PID file removed after cancel"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: PID file should be removed"
+        fi
+    )
+
+    # Process should be dead
+    sleep 0.1
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if ! kill -0 "$bg_pid" 2>/dev/null; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: Background process killed"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: Background process should be killed"
+        kill "$bg_pid" 2>/dev/null || true
+    fi
+
+    teardown
+}
+
+test_cancel_with_stale_pid() {
+    echo ""
+    echo "Testing: cancel_pending_notification with stale PID"
+
+    setup
+    mkdir -p "$TEMP_DIR/notifications-pending"
+
+    # Write a PID that doesn't exist
+    echo "99999999" > "$TEMP_DIR/notifications-pending/test-session.pid"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        cancel_pending_notification "test-session" "$TEMP_DIR"
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ ! -f "$TEMP_DIR/notifications-pending/test-session.pid" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Stale PID file cleaned up"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Stale PID file should be removed"
+        fi
+    )
+
+    teardown
+}
+
+test_cancel_with_missing_file() {
+    echo ""
+    echo "Testing: cancel_pending_notification with no PID file"
+
+    setup
+    mkdir -p "$TEMP_DIR/notifications-pending"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        # Should return 0 without error
+        cancel_pending_notification "nonexistent-session" "$TEMP_DIR"
+        local exit_code=$?
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ "$exit_code" -eq 0 ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Returns 0 when no PID file exists"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Should return 0 when no PID file"
+        fi
+    )
+
+    teardown
+}
+
+test_cancel_with_empty_file() {
+    echo ""
+    echo "Testing: cancel_pending_notification with empty PID file"
+
+    setup
+    mkdir -p "$TEMP_DIR/notifications-pending"
+
+    # Create empty PID file
+    touch "$TEMP_DIR/notifications-pending/test-session.pid"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        cancel_pending_notification "test-session" "$TEMP_DIR"
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ ! -f "$TEMP_DIR/notifications-pending/test-session.pid" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Empty PID file cleaned up"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Empty PID file should be removed"
+        fi
+    )
+
+    teardown
+}
+
+test_cancel_with_corrupt_file() {
+    echo ""
+    echo "Testing: cancel_pending_notification with corrupt PID file"
+
+    setup
+    mkdir -p "$TEMP_DIR/notifications-pending"
+
+    # Write non-numeric content
+    echo "not-a-number" > "$TEMP_DIR/notifications-pending/test-session.pid"
+
+    (
+        source "$LIB_DIR/common.sh"
+
+        cancel_pending_notification "test-session" "$TEMP_DIR"
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ ! -f "$TEMP_DIR/notifications-pending/test-session.pid" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Corrupt PID file cleaned up"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Corrupt PID file should be removed"
+        fi
+    )
+
+    teardown
+}
+
+test_cancel_default_claude_home() {
+    echo ""
+    echo "Testing: cancel_pending_notification uses default CLAUDE_HOME"
+
+    setup
+    mkdir -p "$TEMP_DIR/notifications-pending"
+
+    (
+        export CLAUDE_HOME="$TEMP_DIR"
+        source "$LIB_DIR/common.sh"
+
+        # Create a PID file at the default location
+        echo "99999999" > "$TEMP_DIR/notifications-pending/test-session.pid"
+
+        # Call without explicit claude_home — should use CLAUDE_HOME env
+        cancel_pending_notification "test-session"
+
+        TESTS_RUN=$((TESTS_RUN + 1))
+        if [ ! -f "$TEMP_DIR/notifications-pending/test-session.pid" ]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Uses CLAUDE_HOME env var as default"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Should use CLAUDE_HOME env var"
+        fi
+    )
+
+    teardown
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -1109,6 +1297,12 @@ run_all_tests() {
     test_format_for_telegram_empty_input
     test_format_for_telegram_border_only_lines_removed
     test_format_for_telegram_preserves_markdown
+    test_cancel_with_live_pid
+    test_cancel_with_stale_pid
+    test_cancel_with_missing_file
+    test_cancel_with_empty_file
+    test_cancel_with_corrupt_file
+    test_cancel_default_claude_home
 
     echo ""
     echo "=============================================="
