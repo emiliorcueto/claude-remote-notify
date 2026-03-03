@@ -89,8 +89,13 @@ if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
     exit 0
 fi
 
-# Topic ID is optional (for single-session setups)
-TOPIC_ID="${TELEGRAM_TOPIC_ID:-}"
+# Topic ID is REQUIRED for multi-session listener (must match listener validation)
+# Sessions without a topic ID are not configured as claude-remote sessions
+if [ -z "$TELEGRAM_TOPIC_ID" ]; then
+    exit 0
+fi
+
+TOPIC_ID="$TELEGRAM_TOPIC_ID"
 
 # Debounce delay (seconds). Set NOTIFY_DEBOUNCE=0 in config to disable.
 DEBOUNCE_SECONDS="${NOTIFY_DEBOUNCE:-20}"
