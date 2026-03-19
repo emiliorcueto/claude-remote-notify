@@ -42,6 +42,7 @@ Media Support:
 =============================================================================
 """
 
+import json
 import os
 import sys
 import time
@@ -1525,6 +1526,229 @@ def handle_command(command, from_user, message_id=None):
     return False
 
 # =============================================================================
+# STARTUP GUARD & DEDUPLICATION
+# =============================================================================
+
+# Multi-session mode: only one listener instance can run at a time.
+# Old single-session listeners (telegram-listener.py --session) conflict with
+# the multi-session listener because both long-poll the same Telegram bot API,
+# causing "terminated by other getUpdates request" errors and race conditions
+# where the same message gets processed by multiple listeners.
+
+OFFSET_TRACKING_FILE = CLAUDE_HOME / 'state' / 'listener-offsets.json'
+OFFSET_MAX_TRACKED = 1000
+OFFSET_SAVE_INTERVAL = 100  # save every N updates processed
+
+
+def is_process_running(pid: int) -> bool:
+    """Check if a process with the given PID is running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        # Process exists but we can't signal it — it's running
+        return True
+    except ProcessLookupError:
+        return False
+    except (OSError, ValueError):
+        return False
+
+
+def check_existing_listener() -> bool:
+    """Check if another multi-session listener is already running.
+
+    Returns True if startup should proceed, False if another instance is running.
+    Cleans up stale PID files automatically.
+    """
+    pid_file = CLAUDE_HOME / 'pids' / 'listener-multi.pid'
+
+    if not pid_file.exists():
+        return True
+
+    try:
+        pid_str = pid_file.read_text().strip()
+        if not pid_str:
+            log_multi("Removing empty listener PID file", "WARN")
+            pid_file.unlink(missing_ok=True)
+            return True
+
+        pid = int(pid_str)
+
+        # Don't block on our own PID (e.g. after restart)
+        if pid == os.getpid():
+            return True
+
+        if is_process_running(pid):
+            log_multi(f"Listener already running (PID: {pid}). Only one instance allowed.", "ERROR")
+            return False
+
+        log_multi(f"Removing stale listener PID file (PID {pid} not running)", "WARN")
+        pid_file.unlink(missing_ok=True)
+        return True
+
+    except (ValueError, OSError) as e:
+        log_multi(f"Corrupt PID file, removing: {e}", "WARN")
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
+
+def find_old_single_session_listeners() -> list:
+    """Find running old single-session listener processes.
+
+    Returns list of (pid, session_name) tuples.
+    """
+    old_listeners = []
+    pids_dir = CLAUDE_HOME / 'pids'
+
+    if not pids_dir.exists():
+        return old_listeners
+
+    for pid_file in pids_dir.glob('listener-*.pid'):
+        # Skip the multi-session PID file
+        if pid_file.name == 'listener-multi.pid':
+            continue
+
+        session_name = pid_file.stem.replace('listener-', '')
+        try:
+            pid_str = pid_file.read_text().strip()
+            if pid_str:
+                pid = int(pid_str)
+                if is_process_running(pid):
+                    old_listeners.append((pid, session_name))
+        except (ValueError, OSError):
+            pass
+
+    return old_listeners
+
+
+def prompt_cleanup_old_listeners(old_listeners: list) -> bool:
+    """Prompt user to clean up old single-session listeners.
+
+    Returns True if cleanup was performed or skipped, False on error.
+    """
+    print()
+    log_multi(f"Old single-session listeners detected ({len(old_listeners)}):", "WARN")
+    for pid, name in old_listeners:
+        log_multi(f"  - {name} (PID: {pid})", "WARN")
+    print()
+    log_multi("These conflict with multi-session mode and can cause duplicate message routing.", "WARN")
+    print()
+
+    cleanup_script = CLAUDE_HOME / 'hooks' / 'cleanup-old-listeners.sh'
+    if cleanup_script.exists():
+        print("Run cleanup script? (kills old listeners and cleans up)")
+        print("  1. Yes - Run cleanup now")
+        print("  2. No - Continue without cleanup (manual cleanup needed later)")
+        print()
+
+        try:
+            choice = input("Choice [1/2]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = '2'
+
+        if choice == '1':
+            log_multi("Running cleanup script...")
+            try:
+                result = subprocess.run(
+                    ['bash', str(cleanup_script)],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.stdout:
+                    print(result.stdout)
+                if result.returncode == 0:
+                    log_multi("Cleanup completed successfully")
+                else:
+                    log_multi(f"Cleanup script exited with code {result.returncode}", "WARN")
+                    if result.stderr:
+                        log_multi(f"Cleanup stderr: {result.stderr.strip()}", "WARN")
+            except subprocess.TimeoutExpired:
+                log_multi("Cleanup script timed out", "ERROR")
+            except Exception as e:
+                log_multi(f"Error running cleanup: {e}", "ERROR")
+        else:
+            log_multi("Skipping cleanup - continuing with potential conflicts", "WARN")
+    else:
+        log_multi("No cleanup script found. Kill old listeners manually:", "WARN")
+        for pid, name in old_listeners:
+            log_multi(f"  kill {pid}  # {name}", "WARN")
+
+    return True
+
+
+class OffsetTracker:
+    """Tracks processed Telegram update_ids to prevent duplicate processing.
+
+    Persists to disk so deduplication survives listener restarts. Keeps only the
+    last OFFSET_MAX_TRACKED update IDs (FIFO removal of oldest).
+    """
+
+    def __init__(self, filepath: Path = OFFSET_TRACKING_FILE, max_tracked: int = OFFSET_MAX_TRACKED):
+        self.filepath = filepath
+        self.max_tracked = max_tracked
+        self.seen_offsets: list = []
+        self.seen_set: set = set()
+        self.updates_since_save = 0
+        self._load()
+
+    def _load(self):
+        """Load tracked offsets from disk."""
+        if not self.filepath.exists():
+            return
+
+        try:
+            data = json.loads(self.filepath.read_text())
+            offsets = data.get('offsets', [])
+            # Keep only last max_tracked
+            if len(offsets) > self.max_tracked:
+                offsets = offsets[-self.max_tracked:]
+            self.seen_offsets = offsets
+            self.seen_set = set(offsets)
+            log_multi(f"Loaded {len(offsets)} tracked offsets from disk")
+        except (json.JSONDecodeError, OSError) as e:
+            log_multi(f"Could not load offset file: {e}", "WARN")
+            self.seen_offsets = []
+            self.seen_set = set()
+
+    def save(self):
+        """Save tracked offsets to disk."""
+        try:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                'offsets': self.seen_offsets[-self.max_tracked:],
+                'last_saved': int(time.time())
+            }
+            self.filepath.write_text(json.dumps(data))
+            self.updates_since_save = 0
+            log_multi(f"Saved {len(self.seen_offsets)} tracked offsets to disk")
+        except OSError as e:
+            log_multi(f"Could not save offset file: {e}", "WARN")
+
+    def is_duplicate(self, update_id: int) -> bool:
+        """Check if an update_id has been seen before."""
+        return update_id in self.seen_set
+
+    def track(self, update_id: int):
+        """Record an update_id as processed."""
+        if update_id not in self.seen_set:
+            self.seen_offsets.append(update_id)
+            self.seen_set.add(update_id)
+
+            # Rotate if too many
+            if len(self.seen_offsets) > self.max_tracked:
+                removed = self.seen_offsets[:-self.max_tracked]
+                self.seen_offsets = self.seen_offsets[-self.max_tracked:]
+                for r in removed:
+                    self.seen_set.discard(r)
+
+        self.updates_since_save += 1
+        if self.updates_since_save >= OFFSET_SAVE_INTERVAL:
+            self.save()
+
+
+# =============================================================================
 # MAIN LOOP
 # =============================================================================
 
@@ -1969,6 +2193,7 @@ def run_multi_session():
 
     offset = None
     error_count = 0
+    tracker = OffsetTracker()
 
     log_multi("Listening for messages (multi-session mode)...")
 
@@ -1983,7 +2208,15 @@ def run_multi_session():
             error_count = 0
 
             for update in updates:
-                offset = update['update_id'] + 1
+                update_id = update['update_id']
+                offset = update_id + 1
+
+                # Deduplication: skip updates we've already processed
+                if tracker.is_duplicate(update_id):
+                    log_multi(f"Skipping duplicate update {update_id}")
+                    continue
+
+                tracker.track(update_id)
 
                 # Handle callback_query (inline keyboard button clicks)
                 callback_query = update.get('callback_query')
@@ -2128,10 +2361,12 @@ def run_multi_session():
 
         except KeyboardInterrupt:
             log_multi("Interrupted by user")
+            tracker.save()
             return False
         except Exception as e:
             error_count += 1
             log_multi(f"Error in main loop: {e}", "ERROR")
+            tracker.save()
 
             if error_count > 10:
                 log_multi("Too many consecutive errors, triggering restart", "ERROR")
@@ -2141,14 +2376,28 @@ def run_multi_session():
             log_multi(f"Waiting {wait_time}s before retry...", "WARN")
             time.sleep(wait_time)
 
+    tracker.save()
     return False
 
 
 def main_multi():
-    """Entry point for multi-session mode."""
+    """Entry point for multi-session mode.
+
+    Only one multi-session listener can run at a time. This function checks for
+    existing instances and old single-session listeners before starting.
+    """
     log_multi("=" * 60)
-    log_multi("Multi-Session Telegram Listener Starting")
+    log_multi("Multi-Session Telegram Listener Starting (Exclusive Mode)")
     log_multi("=" * 60)
+
+    # Startup guard: prevent multiple instances
+    if not check_existing_listener():
+        sys.exit(1)
+
+    # Check for old single-session listeners that conflict with multi-session mode
+    old_listeners = find_old_single_session_listeners()
+    if old_listeners:
+        prompt_cleanup_old_listeners(old_listeners)
 
     # Write PID file for multi-session mode
     pid_file = CLAUDE_HOME / 'pids' / 'listener-multi.pid'
