@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+- Fix multi-session Telegram routing when old single-session listeners are still running (Issue #33)
+  - PID-based startup guard prevents multiple multi-session listener instances
+  - Persistent update deduplication (`~/.claude/state/listener-offsets.json`) prevents duplicate message injection on restart
+  - Interactive detection and cleanup of old single-session listeners at startup
+  - New `cleanup-old-listeners.sh` script to kill stale single-session listener processes
+  - Fixed `is_process_running()` to correctly treat `PermissionError` as "process exists"
+
 ### Added
 - Cancel pending notification on user input (Issue #31)
   - Telegram input (text, media, button clicks) cancels pending notification immediately
