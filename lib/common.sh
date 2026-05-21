@@ -746,3 +746,123 @@ register_topic() {
     chmod 600 "$cache"
     trap - RETURN
 }
+
+# =============================================================================
+# TELEGRAM API HELPERS
+# =============================================================================
+
+# Parse a JSON scalar from a Telegram API response using a key path.
+# Minimal parser via python3 to avoid jq dependency (python3 is already
+# required by the listener).
+# Booleans print as "true"/"false". Null prints empty. Missing paths print empty.
+# Usage: _json_get '<json>' '.result.message_thread_id'
+_json_get() {
+    local json="${1:-}"
+    local path="${2:-}"
+    local p="${path#.}"
+    python3 -c "import json,sys
+try:
+    d=json.loads(sys.argv[1])
+    for k in sys.argv[2].split('.'):
+        if isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
+            sys.exit(0)
+    if isinstance(d, bool):
+        print('true' if d else 'false')
+    elif d is None:
+        pass
+    else:
+        print(d)
+except Exception:
+    sys.exit(0)
+" "$json" "$p"
+}
+
+# Check that the chat is a forum-enabled supergroup.
+# Returns 0 if is_forum=true, 1 otherwise.
+# Usage: telegram_chat_is_forum "$BOT_TOKEN" "$CHAT_ID"
+telegram_chat_is_forum() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+    local response
+    response=$(curl -s "https://api.telegram.org/bot${token}/getChat?chat_id=${chat_id}")
+    local is_forum
+    is_forum=$(_json_get "$response" '.result.is_forum')
+    [ "$is_forum" = "true" ]
+}
+
+# Verify the bot is an admin in the chat with can_manage_topics permission.
+# Returns 0 on success, 1 otherwise.
+# Usage: telegram_verify_bot_admin "$BOT_TOKEN" "$CHAT_ID"
+telegram_verify_bot_admin() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+
+    local me_response
+    me_response=$(curl -s "https://api.telegram.org/bot${token}/getMe")
+    local bot_id
+    bot_id=$(_json_get "$me_response" '.result.id')
+    [ -z "$bot_id" ] && return 1
+
+    local member_response
+    member_response=$(curl -s "https://api.telegram.org/bot${token}/getChatMember?chat_id=${chat_id}&user_id=${bot_id}")
+    local status
+    status=$(_json_get "$member_response" '.result.status')
+    if [ "$status" != "administrator" ] && [ "$status" != "creator" ]; then
+        return 1
+    fi
+    # creator implicitly has all permissions
+    if [ "$status" = "creator" ]; then
+        return 0
+    fi
+    local can_manage
+    can_manage=$(_json_get "$member_response" '.result.can_manage_topics')
+    [ "$can_manage" = "true" ]
+}
+
+# Create a forum topic. Prints the new topic's message_thread_id on success.
+# Returns non-zero on API failure.
+# Usage: telegram_create_topic "$BOT_TOKEN" "$CHAT_ID" "Topic Name" "<icon_color>"
+telegram_create_topic() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+    local name="${3:-}"
+    local icon_color="${4:-}"
+
+    local response
+    response=$(curl -s -X POST "https://api.telegram.org/bot${token}/createForumTopic" \
+        -d "chat_id=${chat_id}" \
+        --data-urlencode "name=${name}" \
+        -d "icon_color=${icon_color}")
+
+    local ok
+    ok=$(_json_get "$response" '.ok')
+    if [ "$ok" != "true" ]; then
+        return 1
+    fi
+
+    local thread_id
+    thread_id=$(_json_get "$response" '.result.message_thread_id')
+    [ -z "$thread_id" ] && return 1
+    echo "$thread_id"
+}
+
+# Delete a forum topic by message_thread_id.
+# Requires the bot to have can_delete_messages admin permission.
+# Returns 0 on success, 1 on API failure.
+# Usage: telegram_delete_topic "$BOT_TOKEN" "$CHAT_ID" "$TOPIC_ID"
+telegram_delete_topic() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+    local topic_id="${3:-}"
+
+    local response
+    response=$(curl -s -X POST "https://api.telegram.org/bot${token}/deleteForumTopic" \
+        -d "chat_id=${chat_id}" \
+        -d "message_thread_id=${topic_id}")
+
+    local ok
+    ok=$(_json_get "$response" '.ok')
+    [ "$ok" = "true" ]
+}
