@@ -122,6 +122,42 @@ claude-remote --list
 - Detach: `Ctrl+b, d` (keeps session running in background)
 - Text select: `Option+drag` on Mac (mouse mode enabled for touchpad scrolling)
 
+### One-shot session bootstrap with `init`
+
+From any project directory:
+
+```bash
+claude-remote init
+```
+
+This will:
+1. Use the directory name as the session name (override with `--name`)
+2. Verify the bot is admin of your group with **Manage Topics** permission
+3. Auto-create a new Telegram forum topic with a deterministic icon color
+4. Write `~/.claude/sessions/<name>.conf`
+5. Send a minimal welcome message to the new topic
+6. Launch the session immediately
+
+**Requirements:**
+- Group must be a supergroup with Topics enabled (Group Settings → Topics → On)
+- Bot must be promoted to admin with **Manage Topics** permission
+
+**Flags:**
+
+| Flag | Purpose |
+|---|---|
+| `--name <session>` | Override session name (default: `$(basename $PWD)`) |
+| `--topic-name <text>` | Override topic display name (default: session name) |
+| `--reuse-existing` | If a topic with this name is in the local registry, reuse it instead of prompting |
+| `--non-interactive` | Fail instead of prompting on conflicts |
+| `--force` | Overwrite an existing session config without asking |
+| `--no-test-message` | Skip the welcome message |
+| `--no-start` | Don't launch the session after init |
+
+**Note on topic discovery:** Telegram's Bot API doesn't expose a "list topics" endpoint, so duplicate detection is based on a local registry at `~/.claude/topics-cache.conf` of topics this CLI has created. Topics created in Telegram directly are not tracked.
+
+**Live smoke test:** `tests/smoke_init_live.sh` exercises the full flow against a real Telegram group and cleans up after itself. By default it reads credentials from `~/.claude/telegram-remote.conf` — no env-var setup required. To target a different bot/group, override with `SMOKE_BOT_TOKEN` / `SMOKE_CHAT_ID`. The bot needs `can_manage_topics` and (for auto-cleanup) `can_delete_messages` admin permissions.
+
 ## Architecture
 
 ```
