@@ -111,6 +111,100 @@ assert_equals "0" "$rc" "reuse run exits 0"
 topic_id=$(grep '^TELEGRAM_TOPIC_ID=' "$CLAUDE_HOME/sessions/demo.conf" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
 assert_equals "777" "$topic_id" "reused topic ID from registry"
 
+# --- Test --no-test-message: sendMessage should not be called ---
+echo ""
+echo "Testing: --no-test-message"
+
+# Add a sendMessage canary to the mock — if it gets called, the canary file is created
+rm -f "$CLAUDE_HOME/sessions/demo-no-msg.conf"
+SENDMSG_CANARY="$TMPHOME/sendmsg-called"
+rm -f "$SENDMSG_CANARY"
+cat > "$MOCKDIR/curl" <<EOF
+#!/bin/bash
+for arg in "\$@"; do
+    case "\$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChat?chat_id*) printf '%s' '{"ok":true,"result":{"id":-100123,"type":"supergroup","is_forum":true}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"administrator","can_manage_topics":true,"user":{"id":111}}}'; exit 0 ;;
+        *createForumTopic*) printf '%s' '{"ok":true,"result":{"message_thread_id":888,"name":"x","icon_color":7322096}}'; exit 0 ;;
+        *sendMessage*) touch "$SENDMSG_CANARY"; printf '%s' '{"ok":true,"result":{"message_id":1}}'; exit 0 ;;
+    esac
+done
+printf '%s' '{"ok":false}'
+EOF
+chmod +x "$MOCKDIR/curl"
+
+"$PROJECT_DIR/claude-remote" init --name demo-no-msg --topic-name demo-no-msg --no-start --no-test-message >/tmp/init3.out 2>&1
+rc=$?
+assert_equals "0" "$rc" "no-test-message run exits 0"
+if [ ! -f "$SENDMSG_CANARY" ]; then
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+    echo -e "  ${GREEN}PASS${NC}: sendMessage was NOT called with --no-test-message"
+else
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+    echo -e "  ${RED}FAIL${NC}: sendMessage was called despite --no-test-message"
+fi
+
+# --- Test --non-interactive with pre-existing topic name (should fail) ---
+echo ""
+echo "Testing: --non-interactive with topic name conflict"
+
+# Restore the standard mock for createForumTopic returning 777
+cat > "$MOCKDIR/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChat?chat_id*) printf '%s' '{"ok":true,"result":{"id":-100123,"type":"supergroup","is_forum":true}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"administrator","can_manage_topics":true,"user":{"id":111}}}'; exit 0 ;;
+        *createForumTopic*) printf '%s' '{"ok":true,"result":{"message_thread_id":777,"name":"demo","icon_color":7322096}}'; exit 0 ;;
+        *sendMessage*) printf '%s' '{"ok":true,"result":{"message_id":1}}'; exit 0 ;;
+    esac
+done
+printf '%s' '{"ok":false}'
+EOF
+chmod +x "$MOCKDIR/curl"
+
+set +e
+"$PROJECT_DIR/claude-remote" init --name conflict-test --topic-name demo --no-start --non-interactive >/tmp/init4.out 2>&1
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+    echo -e "  ${GREEN}PASS${NC}: --non-interactive with topic conflict exits non-zero"
+else
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+    echo -e "  ${RED}FAIL${NC}: --non-interactive with topic conflict should fail"
+fi
+
+# --- Test telegram_chat_is_forum=false should fail with actionable error ---
+echo ""
+echo "Testing: non-forum group fails fast"
+
+cat > "$MOCKDIR/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChat?chat_id*) printf '%s' '{"ok":true,"result":{"id":-100123,"type":"supergroup","is_forum":false}}'; exit 0 ;;
+    esac
+done
+printf '%s' '{"ok":false}'
+EOF
+chmod +x "$MOCKDIR/curl"
+
+set +e
+"$PROJECT_DIR/claude-remote" init --name nonforum --topic-name nonforum --no-start --non-interactive >/tmp/init5.out 2>&1
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+    echo -e "  ${GREEN}PASS${NC}: non-forum group exits non-zero"
+else
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+    echo -e "  ${RED}FAIL${NC}: non-forum group should fail"
+fi
+
 echo ""
 echo "=========================================="
 echo "Tests run:    $TESTS_RUN"

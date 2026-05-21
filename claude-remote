@@ -631,8 +631,12 @@ cmd_init() {
 
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --name)             session_name="$2"; shift 2 ;;
-            --topic-name)       topic_name="$2"; shift 2 ;;
+            --name)
+                [ -z "${2:-}" ] && error "--name requires a value"
+                session_name="$2"; shift 2 ;;
+            --topic-name)
+                [ -z "${2:-}" ] && error "--topic-name requires a value"
+                topic_name="$2"; shift 2 ;;
             --non-interactive)  non_interactive="true"; shift ;;
             --force)            force="true"; shift ;;
             --reuse-existing)   reuse_existing="true"; shift ;;
@@ -641,6 +645,9 @@ cmd_init() {
             *) error "Unknown init flag: $1" ;;
         esac
     done
+
+    # Auto-enable non-interactive if stdin is not a terminal (CI, hooks, pipes)
+    [ -t 0 ] || non_interactive="true"
 
     # Default session name = current directory basename
     if [ -z "$session_name" ]; then
@@ -673,8 +680,8 @@ cmd_init() {
     fi
 
     local bot_token chat_id
-    bot_token=$(grep '^TELEGRAM_BOT_TOKEN=' "$global_conf" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
-    chat_id=$(grep '^TELEGRAM_CHAT_ID=' "$global_conf" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    bot_token=$(grep '^TELEGRAM_BOT_TOKEN=' "$global_conf" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
+    chat_id=$(grep '^TELEGRAM_CHAT_ID=' "$global_conf" | cut -d'=' -f2- | tr -d '"' | tr -d "'" || true)
     [ -z "$bot_token" ] && error "TELEGRAM_BOT_TOKEN missing from $global_conf"
     [ -z "$chat_id" ]   && error "TELEGRAM_CHAT_ID missing from $global_conf"
 

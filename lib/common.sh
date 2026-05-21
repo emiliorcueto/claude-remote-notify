@@ -233,7 +233,7 @@ log_error() { [ "$LOG_LEVEL" -le "$LOG_LEVEL_ERROR" ] && echo -e "${_LOG_RED}[ER
 # =============================================================================
 
 # Allowed config keys (whitelist)
-_ALLOWED_CONFIG_KEYS="TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_TOPIC_ID TMUX_SESSION NOTIFY_DEBOUNCE"
+_ALLOWED_CONFIG_KEYS="TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_TOPIC_ID TELEGRAM_TOPIC_NAME TMUX_SESSION NOTIFY_DEBOUNCE"
 
 # Load config file safely without sourcing
 # Usage: load_config_safely "/path/to/config.conf"
