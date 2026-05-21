@@ -617,13 +617,167 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# init - one-shot session bootstrap with auto-created Telegram topic
+# -----------------------------------------------------------------------------
+
+cmd_init() {
+    local session_name=""
+    local topic_name=""
+    local non_interactive="false"
+    local force="false"
+    local reuse_existing="false"
+    local no_start="false"
+    local no_test_message="false"
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --name)             session_name="$2"; shift 2 ;;
+            --topic-name)       topic_name="$2"; shift 2 ;;
+            --non-interactive)  non_interactive="true"; shift ;;
+            --force)            force="true"; shift ;;
+            --reuse-existing)   reuse_existing="true"; shift ;;
+            --no-start)         no_start="true"; shift ;;
+            --no-test-message)  no_test_message="true"; shift ;;
+            *) error "Unknown init flag: $1" ;;
+        esac
+    done
+
+    # Default session name = current directory basename
+    if [ -z "$session_name" ]; then
+        session_name=$(basename "$PWD")
+    fi
+    session_name=$(echo "$session_name" | tr -cd 'a-zA-Z0-9_-')
+    if [ -z "$session_name" ]; then
+        error "Could not derive a valid session name. Use --name."
+    fi
+
+    # Default topic name = session name
+    [ -z "$topic_name" ] && topic_name="$session_name"
+
+    local config="$SESSIONS_DIR/$session_name.conf"
+
+    # Existing session config check
+    if [ -f "$config" ] && [ "$force" != "true" ]; then
+        if [ "$non_interactive" = "true" ]; then
+            error "Session '$session_name' already exists. Use --force to overwrite."
+        fi
+        warn "Session '$session_name' already exists at $config"
+        read -p "Overwrite? (y/N): " ow
+        [[ "$ow" =~ ^[Yy]$ ]] || { info "Aborted."; exit 0; }
+    fi
+
+    # Require global Telegram config
+    local global_conf="$CLAUDE_HOME/telegram-remote.conf"
+    if [ ! -f "$global_conf" ]; then
+        error "Global config not found at $global_conf. Run setup-telegram-remote.sh first."
+    fi
+
+    local bot_token chat_id
+    bot_token=$(grep '^TELEGRAM_BOT_TOKEN=' "$global_conf" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    chat_id=$(grep '^TELEGRAM_CHAT_ID=' "$global_conf" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    [ -z "$bot_token" ] && error "TELEGRAM_BOT_TOKEN missing from $global_conf"
+    [ -z "$chat_id" ]   && error "TELEGRAM_CHAT_ID missing from $global_conf"
+
+    # Verify group is a forum
+    info "Verifying group is forum-enabled..."
+    if ! telegram_chat_is_forum "$bot_token" "$chat_id"; then
+        error "Group $chat_id is not a forum. Enable Topics in Telegram: Group Settings > Topics > On."
+    fi
+
+    # Verify bot has admin + can_manage_topics
+    info "Verifying bot permissions..."
+    if ! telegram_verify_bot_admin "$bot_token" "$chat_id"; then
+        error "Bot is not an admin with 'Manage Topics'. Promote the bot in Telegram first."
+    fi
+
+    # Check registry for existing topic by name
+    local existing_id
+    existing_id=$(lookup_topic_by_name "$topic_name")
+    local topic_id=""
+
+    if [ -n "$existing_id" ]; then
+        if [ "$reuse_existing" = "true" ]; then
+            info "Reusing existing topic '$topic_name' (id=$existing_id) from registry."
+            topic_id="$existing_id"
+        elif [ "$non_interactive" = "true" ]; then
+            error "Topic '$topic_name' exists in registry (id=$existing_id). Use --reuse-existing or pick a different --topic-name."
+        else
+            warn "Topic '$topic_name' already exists in registry (id=$existing_id)."
+            echo "  [r] Reuse existing topic"
+            echo "  [n] Pick a new name"
+            echo "  [c] Cancel"
+            read -p "Choice (r/n/c): " choice
+            case "$choice" in
+                r|R) topic_id="$existing_id" ;;
+                n|N)
+                    read -p "New topic name: " topic_name
+                    [ -z "$topic_name" ] && error "Topic name required."
+                    ;;
+                *) info "Cancelled."; exit 0 ;;
+            esac
+        fi
+    fi
+
+    # Create topic if we don't have one yet
+    if [ -z "$topic_id" ]; then
+        local color
+        color=$(deterministic_icon_color "$session_name")
+        info "Creating topic '$topic_name' (icon color=$color)..."
+        topic_id=$(telegram_create_topic "$bot_token" "$chat_id" "$topic_name" "$color")
+        [ -z "$topic_id" ] && error "Failed to create topic. Check bot permissions and group settings."
+        register_topic "$topic_name" "$topic_id"
+        success "Topic created (id=$topic_id)"
+    fi
+
+    # Write session config
+    mkdir -p "$SESSIONS_DIR"
+    cat > "$config" <<EOF
+# Claude Remote - Session: $session_name
+# Created: $(date)
+
+TELEGRAM_BOT_TOKEN="$bot_token"
+TELEGRAM_CHAT_ID="$chat_id"
+TELEGRAM_TOPIC_ID="$topic_id"
+TELEGRAM_TOPIC_NAME="$topic_name"
+TMUX_SESSION="claude-$session_name"
+EOF
+    chmod 600 "$config"
+    success "Session config written: $config"
+
+    # Minimal welcome message
+    if [ "$no_test_message" != "true" ]; then
+        curl -s -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+            -d "chat_id=${chat_id}" \
+            -d "message_thread_id=${topic_id}" \
+            --data-urlencode "text=Session \`${session_name}\` ready." \
+            -d "parse_mode=Markdown" >/dev/null || true
+    fi
+
+    # Chain into session start
+    if [ "$no_start" = "true" ]; then
+        info "Skipping session start (--no-start)."
+        echo "To start: claude-remote $session_name"
+    else
+        info "Starting session..."
+        start_session "$session_name"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
 main() {
     local session="default"
     local action="start"
-    
+
+    # Detect 'init' as first positional sub-command (runs and returns directly)
+    if [ "${1:-}" = "init" ]; then
+        shift
+        cmd_init "$@"
+        return $?
+    fi
+
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
