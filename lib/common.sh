@@ -823,6 +823,9 @@ telegram_verify_bot_admin() {
 
 # Create a forum topic. Prints the new topic's message_thread_id on success.
 # Returns non-zero on API failure.
+# Note: NOT idempotent. The Telegram API will create a duplicate topic if
+# called twice with the same name. Callers should check the local registry
+# (lookup_topic_by_name) before calling to avoid duplicates.
 # Usage: telegram_create_topic "$BOT_TOKEN" "$CHAT_ID" "Topic Name" "<icon_color>"
 telegram_create_topic() {
     local token="${1:-}"

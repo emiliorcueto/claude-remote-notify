@@ -1362,9 +1362,11 @@ _mock_curl_setup() {
     local response="$1"
     local mockdir
     mockdir=$(mktemp -d -t curlmock-XXXXXX)
-    cat > "$mockdir/curl" <<EOF
+    # Store response in a sibling file; the mock curl prints its contents.
+    printf '%s' "$response" > "$mockdir/response.json"
+    cat > "$mockdir/curl" <<'EOF'
 #!/bin/bash
-printf '%s' '$response'
+cat "$(dirname "$0")/response.json"
 EOF
     chmod +x "$mockdir/curl"
     echo "$mockdir"
@@ -1467,6 +1469,56 @@ EOF
 
     export PATH="${PATH#$mockdir:}"
     rm -rf "$mockdir"
+
+    # Mock: bot is creator (should pass without can_manage_topics check)
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"creator","user":{"id":111}}}'; exit 0 ;;
+    esac
+done
+EOF
+    chmod +x "$mockdir/curl"
+    export PATH="$mockdir:$PATH"
+
+    if telegram_verify_bot_admin "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: creator status passes implicitly"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: creator status should pass"
+    fi
+
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+
+    # Mock: administrator but lacking can_manage_topics
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"administrator","can_manage_topics":false,"user":{"id":111}}}'; exit 0 ;;
+    esac
+done
+EOF
+    chmod +x "$mockdir/curl"
+    export PATH="$mockdir:$PATH"
+
+    if ! telegram_verify_bot_admin "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: admin without can_manage_topics returns failure"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: admin without can_manage_topics should fail"
+    fi
+
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
 }
 
 # =============================================================================
@@ -1480,13 +1532,17 @@ test_telegram_create_topic() {
     local mockdir
     mockdir=$(_mock_curl_setup '{"ok":true,"result":{"message_thread_id":42,"name":"foo","icon_color":7322096}}')
     export PATH="$mockdir:$PATH"
+    trap 'export PATH="${PATH#$mockdir:}"; rm -rf "$mockdir"' RETURN
     local id
     id=$(telegram_create_topic "FAKETOKEN" "-100123" "foo" "7322096")
     assert_equals "42" "$id" "Returns message_thread_id on success"
-    _mock_curl_teardown "$mockdir"
+    trap - RETURN
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
 
     mockdir=$(_mock_curl_setup '{"ok":false,"error_code":400,"description":"Bad Request"}')
     export PATH="$mockdir:$PATH"
+    trap 'export PATH="${PATH#$mockdir:}"; rm -rf "$mockdir"' RETURN
     if ! telegram_create_topic "FAKETOKEN" "-100123" "foo" "7322096" >/dev/null 2>&1; then
         TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
         echo -e "  ${GREEN}PASS${NC}: API error returns non-zero"
@@ -1494,7 +1550,9 @@ test_telegram_create_topic() {
         TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
         echo -e "  ${RED}FAIL${NC}: API error should return non-zero"
     fi
-    _mock_curl_teardown "$mockdir"
+    trap - RETURN
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
 }
 
 # =============================================================================
