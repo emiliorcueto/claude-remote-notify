@@ -1255,6 +1255,339 @@ test_cancel_default_claude_home() {
 }
 
 # =============================================================================
+# TEST: deterministic_icon_color
+# =============================================================================
+
+test_deterministic_icon_color() {
+    echo ""
+    echo "Testing deterministic_icon_color..."
+
+    # Same input → same color (deterministic)
+    local color1
+    color1=$(deterministic_icon_color "myproject")
+    local color2
+    color2=$(deterministic_icon_color "myproject")
+    assert_equals "$color1" "$color2" "Same name yields same color"
+
+    # Output is one of the 7 valid Telegram preset colors
+    case "$color1" in
+        7322096|16766590|13338331|9367192|16749490|16478047|15749964)
+            TESTS_RUN=$((TESTS_RUN + 1))
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Color is a valid Telegram preset ($color1)"
+            ;;
+        *)
+            TESTS_RUN=$((TESTS_RUN + 1))
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Color $color1 not in valid preset list"
+            ;;
+    esac
+
+    # Different names should (mostly) produce different colors — sample 7 distinct
+    local seen=""
+    for n in alpha beta gamma delta epsilon zeta eta; do
+        seen="${seen}$(deterministic_icon_color "$n")\n"
+    done
+    local unique
+    unique=$(printf '%b' "$seen" | sort -u | grep -c .)
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ "$unique" -ge 3 ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: 7 distinct names produce ≥3 distinct colors ($unique)"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: Only $unique distinct colors from 7 names — hash too clustered"
+    fi
+}
+
+# =============================================================================
+# TEST: topic registry (lookup_topic_by_name, register_topic)
+# =============================================================================
+
+test_topic_registry() {
+    echo ""
+    echo "Testing topic registry..."
+
+    # Use a temp HOME so we don't touch user's real registry
+    local tmphome
+    tmphome=$(mktemp -d -t topicreg-XXXXXX)
+    local orig_home="$HOME"
+    # Restore HOME and remove tmphome even if an assertion later fails under set -e
+    trap 'export HOME="$orig_home"; rm -rf "$tmphome"; trap - RETURN' RETURN
+    export HOME="$tmphome"
+    mkdir -p "$HOME/.claude"
+
+    # Lookup returns empty for missing entry
+    local result
+    result=$(lookup_topic_by_name "missing" || true)
+    assert_equals "" "$result" "Missing topic returns empty"
+
+    # Register then lookup
+    register_topic "myproject" "12345"
+    result=$(lookup_topic_by_name "myproject")
+    assert_equals "12345" "$result" "Registered topic returns ID"
+
+    # Re-register overwrites
+    register_topic "myproject" "67890"
+    result=$(lookup_topic_by_name "myproject")
+    assert_equals "67890" "$result" "Re-registering overwrites"
+
+    # Topic name with spaces and mixed case
+    register_topic "My Cool Project" "999"
+    result=$(lookup_topic_by_name "My Cool Project")
+    assert_equals "999" "$result" "Spaces and mixed case work"
+
+    # Registry file has correct perms (600)
+    local perms
+    perms=$(stat -f '%A' "$HOME/.claude/topics-cache.conf" 2>/dev/null || stat -c '%a' "$HOME/.claude/topics-cache.conf")
+    assert_equals "600" "$perms" "Registry file is 0600"
+
+}
+
+# =============================================================================
+# TELEGRAM API HELPERS — mock helpers
+# =============================================================================
+
+# Mock curl by creating a temp dir with a stub curl that prints a canned
+# response. Returns the mockdir path via stdout.
+# NOTE: PATH manipulation must be done by the CALLER after capturing the path,
+# because this function runs in a subshell when called via $(...) and cannot
+# export PATH to the parent shell.
+# Usage:
+#   mockdir=$(_mock_curl_setup '{"ok":true}')
+#   export PATH="$mockdir:$PATH"
+#   ...
+#   _mock_curl_teardown "$mockdir"
+_mock_curl_setup() {
+    local response="$1"
+    local mockdir
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    # Store response in a sibling file; the mock curl prints its contents.
+    printf '%s' "$response" > "$mockdir/response.json"
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+cat "$(dirname "$0")/response.json"
+EOF
+    chmod +x "$mockdir/curl"
+    echo "$mockdir"
+}
+
+_mock_curl_teardown() {
+    local mockdir="$1"
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+}
+
+# =============================================================================
+# TEST: telegram_chat_is_forum
+# =============================================================================
+
+test_telegram_chat_is_forum() {
+    echo ""
+    echo "Testing telegram_chat_is_forum..."
+
+    local mockdir
+    mockdir=$(_mock_curl_setup '{"ok":true,"result":{"id":-100123,"type":"supergroup","is_forum":true}}')
+    export PATH="$mockdir:$PATH"
+    if telegram_chat_is_forum "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: is_forum=true returns success"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: is_forum=true should return success"
+    fi
+    _mock_curl_teardown "$mockdir"
+
+    mockdir=$(_mock_curl_setup '{"ok":true,"result":{"id":-100123,"type":"supergroup"}}')
+    export PATH="$mockdir:$PATH"
+    if ! telegram_chat_is_forum "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: missing is_forum returns failure"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: missing is_forum should fail"
+    fi
+    _mock_curl_teardown "$mockdir"
+}
+
+# =============================================================================
+# TEST: telegram_verify_bot_admin
+# =============================================================================
+
+test_telegram_verify_bot_admin() {
+    echo ""
+    echo "Testing telegram_verify_bot_admin..."
+
+    # Mock returns admin with can_manage_topics
+    local mockdir
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"administrator","can_manage_topics":true,"user":{"id":111}}}'; exit 0 ;;
+    esac
+done
+printf '%s' '{"ok":false}'
+EOF
+    chmod +x "$mockdir/curl"
+    export PATH="$mockdir:$PATH"
+
+    if telegram_verify_bot_admin "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: admin with can_manage_topics passes"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: admin with can_manage_topics should pass"
+    fi
+
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+
+    # Mock: bot is plain member
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"member","user":{"id":111}}}'; exit 0 ;;
+    esac
+done
+EOF
+    chmod +x "$mockdir/curl"
+    export PATH="$mockdir:$PATH"
+
+    if ! telegram_verify_bot_admin "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: plain member returns failure"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: plain member should fail"
+    fi
+
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+
+    # Mock: bot is creator (should pass without can_manage_topics check)
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"creator","user":{"id":111}}}'; exit 0 ;;
+    esac
+done
+EOF
+    chmod +x "$mockdir/curl"
+    export PATH="$mockdir:$PATH"
+
+    if telegram_verify_bot_admin "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: creator status passes implicitly"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: creator status should pass"
+    fi
+
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+
+    # Mock: administrator but lacking can_manage_topics
+    mockdir=$(mktemp -d -t curlmock-XXXXXX)
+    cat > "$mockdir/curl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+    case "$arg" in
+        *getMe*) printf '%s' '{"ok":true,"result":{"id":111,"is_bot":true,"username":"testbot"}}'; exit 0 ;;
+        *getChatMember*) printf '%s' '{"ok":true,"result":{"status":"administrator","can_manage_topics":false,"user":{"id":111}}}'; exit 0 ;;
+    esac
+done
+EOF
+    chmod +x "$mockdir/curl"
+    export PATH="$mockdir:$PATH"
+
+    if ! telegram_verify_bot_admin "FAKETOKEN" "-100123"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: admin without can_manage_topics returns failure"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: admin without can_manage_topics should fail"
+    fi
+
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+}
+
+# =============================================================================
+# TEST: telegram_create_topic
+# =============================================================================
+
+test_telegram_create_topic() {
+    echo ""
+    echo "Testing telegram_create_topic..."
+
+    local mockdir
+    mockdir=$(_mock_curl_setup '{"ok":true,"result":{"message_thread_id":42,"name":"foo","icon_color":7322096}}')
+    export PATH="$mockdir:$PATH"
+    trap 'export PATH="${PATH#$mockdir:}"; rm -rf "$mockdir"' RETURN
+    local id
+    id=$(telegram_create_topic "FAKETOKEN" "-100123" "foo" "7322096")
+    assert_equals "42" "$id" "Returns message_thread_id on success"
+    trap - RETURN
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+
+    mockdir=$(_mock_curl_setup '{"ok":false,"error_code":400,"description":"Bad Request"}')
+    export PATH="$mockdir:$PATH"
+    trap 'export PATH="${PATH#$mockdir:}"; rm -rf "$mockdir"' RETURN
+    if ! telegram_create_topic "FAKETOKEN" "-100123" "foo" "7322096" >/dev/null 2>&1; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: API error returns non-zero"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: API error should return non-zero"
+    fi
+    trap - RETURN
+    export PATH="${PATH#$mockdir:}"
+    rm -rf "$mockdir"
+}
+
+# =============================================================================
+# TEST: telegram_delete_topic
+# =============================================================================
+
+test_telegram_delete_topic() {
+    echo ""
+    echo "Testing telegram_delete_topic..."
+
+    local mockdir
+    mockdir=$(_mock_curl_setup '{"ok":true,"result":true}')
+    export PATH="$mockdir:$PATH"
+    if telegram_delete_topic "FAKETOKEN" "-100123" "42"; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: ok=true returns success"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: ok=true should return success"
+    fi
+    _mock_curl_teardown "$mockdir"
+
+    mockdir=$(_mock_curl_setup '{"ok":false,"error_code":400,"description":"Bad Request: topic not found"}')
+    export PATH="$mockdir:$PATH"
+    if ! telegram_delete_topic "FAKETOKEN" "-100123" "42" >/dev/null 2>&1; then
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: ok=false returns non-zero"
+    else
+        TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: ok=false should return non-zero"
+    fi
+    _mock_curl_teardown "$mockdir"
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -1303,6 +1636,12 @@ run_all_tests() {
     test_cancel_with_empty_file
     test_cancel_with_corrupt_file
     test_cancel_default_claude_home
+    test_deterministic_icon_color
+    test_topic_registry
+    test_telegram_chat_is_forum
+    test_telegram_verify_bot_admin
+    test_telegram_create_topic
+    test_telegram_delete_topic
 
     echo ""
     echo "=============================================="

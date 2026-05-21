@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- `claude-remote init` — one-shot session bootstrap that auto-creates a Telegram forum topic, writes the session config, and launches the session. Supports `--name`, `--topic-name`, `--reuse-existing`, `--non-interactive`, `--force`, `--no-test-message`, `--no-start`.
+- Local topic registry at `~/.claude/topics-cache.conf` to support name-based dedup.
+- Deterministic topic icon color (hash of session name → one of 7 Telegram presets).
+- Opt-in live smoke test at `tests/smoke_init_live.sh` with auto-cleanup of created topics.
+
 ### Fixed
 - Fix multi-session Telegram routing when old single-session listeners are still running (Issue #33)
   - PID-based startup guard prevents multiple multi-session listener instances

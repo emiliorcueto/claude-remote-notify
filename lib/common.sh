@@ -233,7 +233,7 @@ log_error() { [ "$LOG_LEVEL" -le "$LOG_LEVEL_ERROR" ] && echo -e "${_LOG_RED}[ER
 # =============================================================================
 
 # Allowed config keys (whitelist)
-_ALLOWED_CONFIG_KEYS="TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_TOPIC_ID TMUX_SESSION NOTIFY_DEBOUNCE"
+_ALLOWED_CONFIG_KEYS="TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_TOPIC_ID TELEGRAM_TOPIC_NAME TMUX_SESSION NOTIFY_DEBOUNCE"
 
 # Load config file safely without sourcing
 # Usage: load_config_safely "/path/to/config.conf"
@@ -511,6 +511,7 @@ html_escape() {
 # - Converts ASCII/Unicode tables to bullet points
 # - Preserves basic markdown (bold, italic, code)
 # Usage: formatted=$(format_for_telegram "$raw_text")
+
 format_for_telegram() {
     local input="$1"
 
@@ -655,4 +656,216 @@ def format_for_telegram(text):
 text = sys.argv[1] if len(sys.argv) > 1 else ""
 print(format_for_telegram(text))
 ' "$input"
+}
+
+# =============================================================================
+# TELEGRAM FORUM TOPIC HELPERS
+# =============================================================================
+
+# Telegram forum topic icon colors (7 presets defined by the Bot API).
+# Source: https://core.telegram.org/bots/api#createforumtopic
+TELEGRAM_TOPIC_COLORS=(7322096 16766590 13338331 9367192 16749490 16478047 15749964)
+
+# Deterministic icon color from session name.
+# Hashes the name with cksum and indexes into TELEGRAM_TOPIC_COLORS.
+# Usage: deterministic_icon_color "myproject"
+deterministic_icon_color() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        echo "${TELEGRAM_TOPIC_COLORS[0]}"
+        return 0
+    fi
+    local hash
+    hash=$(printf '%s' "$name" | cksum | awk '{print $1}')
+    local idx=$((hash % ${#TELEGRAM_TOPIC_COLORS[@]}))
+    echo "${TELEGRAM_TOPIC_COLORS[$idx]}"
+}
+
+# =============================================================================
+# TOPIC REGISTRY
+# =============================================================================
+# Telegram Bot API does not provide a method to list existing forum topics.
+# To support name-based reuse, we maintain a local registry of topics this CLI
+# has created at ~/.claude/topics-cache.conf (key=value, one per line).
+
+# Path to the local topic registry. Override with TOPICS_CACHE_FILE for tests.
+_topics_cache_path() {
+    echo "${TOPICS_CACHE_FILE:-$HOME/.claude/topics-cache.conf}"
+}
+
+# Sanitize a topic name into a safe registry key.
+# Lowercases, replaces non-alphanumeric runs with single underscores, trims.
+# Note: names that normalize to the same key (e.g. "My Project", "my-project",
+# "MY_PROJECT") are treated as identical; registering one overwrites the others.
+_topic_key() {
+    local name="${1:-}"
+    printf '%s' "$name" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
+}
+
+# Look up a topic ID by name. Prints the ID or empty.
+# Usage: lookup_topic_by_name "My Project"
+lookup_topic_by_name() {
+    local name="${1:-}"
+    local cache
+    cache=$(_topics_cache_path)
+    [ -f "$cache" ] || return 0
+    local key
+    key=$(_topic_key "$name")
+    [ -z "$key" ] && return 0
+    awk -F= -v k="$key" '$1 == k { print $2; exit }' "$cache"
+}
+
+# Register a topic name -> ID mapping.
+# Usage: register_topic "My Project" "12345"
+register_topic() {
+    local name="${1:-}"
+    local id="${2:-}"
+    local cache
+    cache=$(_topics_cache_path)
+    local cache_dir
+    cache_dir=$(dirname "$cache")
+    mkdir -p "$cache_dir"
+
+    local key
+    key=$(_topic_key "$name")
+    [ -z "$key" ] && return 1
+    [ -z "$id" ] && return 1
+
+    # Remove any existing entry for this key, then append.
+    local tmp
+    tmp=$(mktemp -t topicreg-XXXXXX)
+    # Clean up tmp if we error out before mv completes
+    trap 'rm -f "$tmp"' RETURN
+    if [ -f "$cache" ]; then
+        awk -F= -v k="$key" '$1 != k' "$cache" > "$tmp"
+    fi
+    printf '%s=%s\n' "$key" "$id" >> "$tmp"
+    mv "$tmp" "$cache"
+    chmod 600 "$cache"
+    trap - RETURN
+}
+
+# =============================================================================
+# TELEGRAM API HELPERS
+# =============================================================================
+
+# Parse a JSON scalar from a Telegram API response using a key path.
+# Minimal parser via python3 to avoid jq dependency (python3 is already
+# required by the listener).
+# Booleans print as "true"/"false". Null prints empty. Missing paths print empty.
+# Usage: _json_get '<json>' '.result.message_thread_id'
+_json_get() {
+    local json="${1:-}"
+    local path="${2:-}"
+    local p="${path#.}"
+    python3 -c "import json,sys
+try:
+    d=json.loads(sys.argv[1])
+    for k in sys.argv[2].split('.'):
+        if isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
+            sys.exit(0)
+    if isinstance(d, bool):
+        print('true' if d else 'false')
+    elif d is None:
+        pass
+    else:
+        print(d)
+except Exception:
+    sys.exit(0)
+" "$json" "$p"
+}
+
+# Check that the chat is a forum-enabled supergroup.
+# Returns 0 if is_forum=true, 1 otherwise.
+# Usage: telegram_chat_is_forum "$BOT_TOKEN" "$CHAT_ID"
+telegram_chat_is_forum() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+    local response
+    response=$(curl -s "https://api.telegram.org/bot${token}/getChat?chat_id=${chat_id}")
+    local is_forum
+    is_forum=$(_json_get "$response" '.result.is_forum')
+    [ "$is_forum" = "true" ]
+}
+
+# Verify the bot is an admin in the chat with can_manage_topics permission.
+# Returns 0 on success, 1 otherwise.
+# Usage: telegram_verify_bot_admin "$BOT_TOKEN" "$CHAT_ID"
+telegram_verify_bot_admin() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+
+    local me_response
+    me_response=$(curl -s "https://api.telegram.org/bot${token}/getMe")
+    local bot_id
+    bot_id=$(_json_get "$me_response" '.result.id')
+    [ -z "$bot_id" ] && return 1
+
+    local member_response
+    member_response=$(curl -s "https://api.telegram.org/bot${token}/getChatMember?chat_id=${chat_id}&user_id=${bot_id}")
+    local status
+    status=$(_json_get "$member_response" '.result.status')
+    if [ "$status" != "administrator" ] && [ "$status" != "creator" ]; then
+        return 1
+    fi
+    # creator implicitly has all permissions
+    if [ "$status" = "creator" ]; then
+        return 0
+    fi
+    local can_manage
+    can_manage=$(_json_get "$member_response" '.result.can_manage_topics')
+    [ "$can_manage" = "true" ]
+}
+
+# Create a forum topic. Prints the new topic's message_thread_id on success.
+# Returns non-zero on API failure.
+# Note: NOT idempotent. The Telegram API will create a duplicate topic if
+# called twice with the same name. Callers should check the local registry
+# (lookup_topic_by_name) before calling to avoid duplicates.
+# Usage: telegram_create_topic "$BOT_TOKEN" "$CHAT_ID" "Topic Name" "<icon_color>"
+telegram_create_topic() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+    local name="${3:-}"
+    local icon_color="${4:-}"
+
+    local response
+    response=$(curl -s -X POST "https://api.telegram.org/bot${token}/createForumTopic" \
+        -d "chat_id=${chat_id}" \
+        --data-urlencode "name=${name}" \
+        -d "icon_color=${icon_color}")
+
+    local ok
+    ok=$(_json_get "$response" '.ok')
+    if [ "$ok" != "true" ]; then
+        return 1
+    fi
+
+    local thread_id
+    thread_id=$(_json_get "$response" '.result.message_thread_id')
+    [ -z "$thread_id" ] && return 1
+    echo "$thread_id"
+}
+
+# Delete a forum topic by message_thread_id.
+# Requires the bot to have can_delete_messages admin permission.
+# Returns 0 on success, 1 on API failure.
+# Usage: telegram_delete_topic "$BOT_TOKEN" "$CHAT_ID" "$TOPIC_ID"
+telegram_delete_topic() {
+    local token="${1:-}"
+    local chat_id="${2:-}"
+    local topic_id="${3:-}"
+
+    local response
+    response=$(curl -s -X POST "https://api.telegram.org/bot${token}/deleteForumTopic" \
+        -d "chat_id=${chat_id}" \
+        -d "message_thread_id=${topic_id}")
+
+    local ok
+    ok=$(_json_get "$response" '.ok')
+    [ "$ok" = "true" ]
 }
