@@ -1301,6 +1301,51 @@ test_deterministic_icon_color() {
 }
 
 # =============================================================================
+# TEST: topic registry (lookup_topic_by_name, register_topic)
+# =============================================================================
+
+test_topic_registry() {
+    echo ""
+    echo "Testing topic registry..."
+
+    # Use a temp HOME so we don't touch user's real registry
+    local tmphome
+    tmphome=$(mktemp -d -t topicreg-XXXXXX)
+    local orig_home="$HOME"
+    export HOME="$tmphome"
+    mkdir -p "$HOME/.claude"
+
+    # Lookup returns empty for missing entry
+    local result
+    result=$(lookup_topic_by_name "missing" || true)
+    assert_equals "" "$result" "Missing topic returns empty"
+
+    # Register then lookup
+    register_topic "myproject" "12345"
+    result=$(lookup_topic_by_name "myproject")
+    assert_equals "12345" "$result" "Registered topic returns ID"
+
+    # Re-register overwrites
+    register_topic "myproject" "67890"
+    result=$(lookup_topic_by_name "myproject")
+    assert_equals "67890" "$result" "Re-registering overwrites"
+
+    # Topic name with spaces and mixed case
+    register_topic "My Cool Project" "999"
+    result=$(lookup_topic_by_name "My Cool Project")
+    assert_equals "999" "$result" "Spaces and mixed case work"
+
+    # Registry file has correct perms (600)
+    local perms
+    perms=$(stat -f '%A' "$HOME/.claude/topics-cache.conf" 2>/dev/null || stat -c '%a' "$HOME/.claude/topics-cache.conf")
+    assert_equals "600" "$perms" "Registry file is 0600"
+
+    # Cleanup
+    export HOME="$orig_home"
+    rm -rf "$tmphome"
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -1350,6 +1395,7 @@ run_all_tests() {
     test_cancel_with_corrupt_file
     test_cancel_default_claude_home
     test_deterministic_icon_color
+    test_topic_registry
 
     echo ""
     echo "=============================================="

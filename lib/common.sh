@@ -680,3 +680,64 @@ deterministic_icon_color() {
     local idx=$((hash % ${#TELEGRAM_TOPIC_COLORS[@]}))
     echo "${TELEGRAM_TOPIC_COLORS[$idx]}"
 }
+
+# =============================================================================
+# TOPIC REGISTRY
+# =============================================================================
+# Telegram Bot API does not provide a method to list existing forum topics.
+# To support name-based reuse, we maintain a local registry of topics this CLI
+# has created at ~/.claude/topics-cache.conf (key=value, one per line).
+
+# Path to the local topic registry. Override with TOPICS_CACHE_FILE for tests.
+_topics_cache_path() {
+    echo "${TOPICS_CACHE_FILE:-$HOME/.claude/topics-cache.conf}"
+}
+
+# Sanitize a topic name into a safe registry key.
+# Lowercases, replaces non-alphanumeric runs with single underscores, trims.
+_topic_key() {
+    local name="${1:-}"
+    printf '%s' "$name" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
+}
+
+# Look up a topic ID by name. Prints the ID or empty.
+# Usage: lookup_topic_by_name "My Project"
+lookup_topic_by_name() {
+    local name="${1:-}"
+    local cache
+    cache=$(_topics_cache_path)
+    [ -f "$cache" ] || return 0
+    local key
+    key=$(_topic_key "$name")
+    [ -z "$key" ] && return 0
+    awk -F= -v k="$key" '$1 == k { print $2; exit }' "$cache"
+}
+
+# Register a topic name -> ID mapping.
+# Usage: register_topic "My Project" "12345"
+register_topic() {
+    local name="${1:-}"
+    local id="${2:-}"
+    local cache
+    cache=$(_topics_cache_path)
+    local cache_dir
+    cache_dir=$(dirname "$cache")
+    mkdir -p "$cache_dir"
+
+    local key
+    key=$(_topic_key "$name")
+    [ -z "$key" ] && return 1
+    [ -z "$id" ] && return 1
+
+    # Remove any existing entry for this key, then append.
+    local tmp
+    tmp=$(mktemp -t topicreg-XXXXXX)
+    if [ -f "$cache" ]; then
+        awk -F= -v k="$key" '$1 != k' "$cache" > "$tmp"
+    fi
+    printf '%s=%s\n' "$key" "$id" >> "$tmp"
+    mv "$tmp" "$cache"
+    chmod 600 "$cache"
+}
