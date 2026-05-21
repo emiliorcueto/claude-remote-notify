@@ -1286,10 +1286,10 @@ test_deterministic_icon_color() {
     # Different names should (mostly) produce different colors — sample 7 distinct
     local seen=""
     for n in alpha beta gamma delta epsilon zeta eta; do
-        seen="$seen $(deterministic_icon_color "$n")"
+        seen="${seen}$(deterministic_icon_color "$n")\n"
     done
     local unique
-    unique=$(echo "$seen" | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
+    unique=$(printf '%b' "$seen" | sort -u | grep -c .)
     TESTS_RUN=$((TESTS_RUN + 1))
     if [ "$unique" -ge 3 ]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
