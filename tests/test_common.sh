@@ -1255,6 +1255,52 @@ test_cancel_default_claude_home() {
 }
 
 # =============================================================================
+# TEST: deterministic_icon_color
+# =============================================================================
+
+test_deterministic_icon_color() {
+    echo ""
+    echo "Testing deterministic_icon_color..."
+
+    # Same input → same color (deterministic)
+    local color1
+    color1=$(deterministic_icon_color "myproject")
+    local color2
+    color2=$(deterministic_icon_color "myproject")
+    assert_equals "$color1" "$color2" "Same name yields same color"
+
+    # Output is one of the 7 valid Telegram preset colors
+    case "$color1" in
+        7322096|16766590|13338331|9367192|16749490|16478047|15749964)
+            TESTS_RUN=$((TESTS_RUN + 1))
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            echo -e "  ${GREEN}PASS${NC}: Color is a valid Telegram preset ($color1)"
+            ;;
+        *)
+            TESTS_RUN=$((TESTS_RUN + 1))
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            echo -e "  ${RED}FAIL${NC}: Color $color1 not in valid preset list"
+            ;;
+    esac
+
+    # Different names should (mostly) produce different colors — sample 7 distinct
+    local seen=""
+    for n in alpha beta gamma delta epsilon zeta eta; do
+        seen="$seen $(deterministic_icon_color "$n")"
+    done
+    local unique
+    unique=$(echo "$seen" | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [ "$unique" -ge 3 ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo -e "  ${GREEN}PASS${NC}: 7 distinct names produce ≥3 distinct colors ($unique)"
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        echo -e "  ${RED}FAIL${NC}: Only $unique distinct colors from 7 names — hash too clustered"
+    fi
+}
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -1303,6 +1349,7 @@ run_all_tests() {
     test_cancel_with_empty_file
     test_cancel_with_corrupt_file
     test_cancel_default_claude_home
+    test_deterministic_icon_color
 
     echo ""
     echo "=============================================="

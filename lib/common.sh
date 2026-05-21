@@ -511,6 +511,29 @@ html_escape() {
 # - Converts ASCII/Unicode tables to bullet points
 # - Preserves basic markdown (bold, italic, code)
 # Usage: formatted=$(format_for_telegram "$raw_text")
+# =============================================================================
+# TELEGRAM FORUM TOPIC HELPERS
+# =============================================================================
+
+# Telegram forum topic icon colors (7 presets defined by the Bot API).
+# Source: https://core.telegram.org/bots/api#createforumtopic
+TELEGRAM_TOPIC_COLORS=(7322096 16766590 13338331 9367192 16749490 16478047 15749964)
+
+# Deterministic icon color from session name.
+# Hashes the name with cksum and indexes into TELEGRAM_TOPIC_COLORS.
+# Usage: deterministic_icon_color "myproject"
+deterministic_icon_color() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        echo "${TELEGRAM_TOPIC_COLORS[0]}"
+        return 0
+    fi
+    local hash
+    hash=$(printf '%s' "$name" | cksum | awk '{print $1}')
+    local idx=$((hash % ${#TELEGRAM_TOPIC_COLORS[@]}))
+    echo "${TELEGRAM_TOPIC_COLORS[$idx]}"
+}
+
 format_for_telegram() {
     local input="$1"
 
