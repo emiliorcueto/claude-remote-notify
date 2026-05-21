@@ -695,6 +695,8 @@ _topics_cache_path() {
 
 # Sanitize a topic name into a safe registry key.
 # Lowercases, replaces non-alphanumeric runs with single underscores, trims.
+# Note: names that normalize to the same key (e.g. "My Project", "my-project",
+# "MY_PROJECT") are treated as identical; registering one overwrites the others.
 _topic_key() {
     local name="${1:-}"
     printf '%s' "$name" \
@@ -734,10 +736,13 @@ register_topic() {
     # Remove any existing entry for this key, then append.
     local tmp
     tmp=$(mktemp -t topicreg-XXXXXX)
+    # Clean up tmp if we error out before mv completes
+    trap 'rm -f "$tmp"' RETURN
     if [ -f "$cache" ]; then
         awk -F= -v k="$key" '$1 != k' "$cache" > "$tmp"
     fi
     printf '%s=%s\n' "$key" "$id" >> "$tmp"
     mv "$tmp" "$cache"
     chmod 600 "$cache"
+    trap - RETURN
 }

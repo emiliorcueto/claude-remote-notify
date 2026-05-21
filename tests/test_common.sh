@@ -1312,6 +1312,8 @@ test_topic_registry() {
     local tmphome
     tmphome=$(mktemp -d -t topicreg-XXXXXX)
     local orig_home="$HOME"
+    # Restore HOME and remove tmphome even if an assertion later fails under set -e
+    trap 'export HOME="$orig_home"; rm -rf "$tmphome"; trap - RETURN' RETURN
     export HOME="$tmphome"
     mkdir -p "$HOME/.claude"
 
@@ -1340,9 +1342,6 @@ test_topic_registry() {
     perms=$(stat -f '%A' "$HOME/.claude/topics-cache.conf" 2>/dev/null || stat -c '%a' "$HOME/.claude/topics-cache.conf")
     assert_equals "600" "$perms" "Registry file is 0600"
 
-    # Cleanup
-    export HOME="$orig_home"
-    rm -rf "$tmphome"
 }
 
 # =============================================================================
