@@ -168,28 +168,33 @@ This will:
 │  │(ID: 123)    │   │(ID: 456)    │   │(ID: 789)    │               │
 │  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘               │
 └─────────┼─────────────────┼─────────────────┼───────────────────────┘
-          │                 │                 │
-          ▼                 ▼                 ▼
-    ┌───────────┐     ┌───────────┐     ┌───────────┐
-    │ Listener  │     │ Listener  │     │ Listener  │
-    │ (alpha)   │     │ (beta)    │     │ (gamma)   │
-    │ filters   │     │ filters   │     │ filters   │
-    │ topic=123 │     │ topic=456 │     │ topic=789 │
-    └─────┬─────┘     └─────┬─────┘     └─────┬─────┘
-          │                 │                 │
-          ▼                 ▼                 ▼
-    ┌───────────┐     ┌───────────┐     ┌───────────┐
-    │   tmux    │     │   tmux    │     │   tmux    │
-    │claude-    │     │claude-    │     │claude-    │
-    │  alpha    │     │   beta    │     │  gamma    │
-    └───────────┘     └───────────┘     └───────────┘
+          └─────────────────┼─────────────────┘
+                            │  getUpdates (single poll)
+                            ▼
+                   ┌──────────────────┐
+                   │   Multi-Session  │
+                   │     Listener     │
+                   │  (one process)   │
+                   │ routes by topic  │
+                   │  ID from configs │
+                   └────┬────┬────┬───┘
+              topic=123 │    │    │ topic=789
+                        │ topic=456
+                        ▼    ▼    ▼
+                  ┌────────┐ ┌────────┐ ┌────────┐
+                  │ tmux   │ │ tmux   │ │ tmux   │
+                  │claude- │ │claude- │ │claude- │
+                  │ alpha  │ │  beta  │ │ gamma  │
+                  └────────┘ └────────┘ └────────┘
 ```
 
 **Key Points:**
-- Single Telegram Bot serves all sessions
-- Each listener filters messages by `message_thread_id` (Topic ID)
-- Messages sent TO a topic go to that session's tmux
-- Notifications FROM a session go to its topic
+- Single Telegram Bot serves all sessions.
+- **One** Python listener process (`telegram-listener.py`, no `--session` arg) polls Telegram and routes each message to the correct tmux session by `message_thread_id` (Topic ID). Telegram permits only one `getUpdates` consumer per bot, so spawning a listener per session would cause them to kick each other out — see issue #37 for the history.
+- The listener discovers sessions by scanning `~/.claude/sessions/*.conf` at startup and on hot-reload.
+- Messages sent TO a topic go to that session's tmux.
+- Notifications FROM a session go to its topic.
+- `claude-remote start_session` calls `ensure_multi_listener`, which is idempotent: it cleans up any legacy per-session listener PIDs via `hooks/cleanup-old-listeners.sh` and only spawns a new multi-session listener if `~/.claude/pids/listener-multi.pid` does not point at a live process.
 
 ## Commands
 
@@ -203,7 +208,7 @@ claude-remote myproject          # Uses ~/.claude/sessions/myproject.conf
                                  # (Topic ID comes from that config file)
 
 # Session management
-claude-remote myproject --kill   # Stop session and listener
+claude-remote myproject --kill   # Stop tmux session (leaves the shared listener running)
 claude-remote --list             # List sessions and exit (does NOT open Claude)
 claude-remote --status           # Show session statuses and exit
 claude-remote --new              # Create new session config (same as setup script)
@@ -269,26 +274,29 @@ claude-notify off                # Disable notifications
 ~/.claude/
 ├── telegram-remote.conf          # Global/default config (optional)
 ├── notifications-enabled         # Flag file (presence = enabled)
+├── topics-cache.conf             # Local registry of topics created by `claude-remote init`
 ├── settings.json                 # Claude Code hooks config
 ├── settings.json.backup          # Backup (created during install if settings existed)
-├── cleanup-<session>.sh          # Auto-generated cleanup script per session
+├── cleanup-<session>.sh          # Auto-generated tmux exit script per session
 ├── sessions/                     # Per-session configs
 │   ├── project-alpha.conf
 │   ├── project-beta.conf
 │   └── myproject.conf
-├── pids/                         # Listener PID files
-│   ├── listener-project-alpha.pid
-│   └── listener-project-beta.pid
-├── logs/                         # Listener logs
-│   ├── listener-project-alpha.log
-│   └── listener-project-beta.log
+├── pids/
+│   └── listener-multi.pid        # Single shared multi-session listener PID
+├── logs/
+│   └── listener-multi.log        # Single shared listener log
+├── state/
+│   └── listener-offsets.json     # Persistent Telegram update offset tracking
 ├── lib/
 │   └── common.sh                 # Shared security library (validation, sanitization)
 ├── hooks/
-│   ├── telegram-notify.sh        # Send notifications (called by Claude hooks)
-│   ├── telegram-listener.py      # Receive messages (runs in background)
-│   ├── telegram-preview.sh       # Send terminal output as HTML
-│   └── remote-notify.sh          # Unified notification control
+│   ├── telegram-notify.sh             # Send notifications (called by Claude hooks)
+│   ├── telegram-listener.py           # Receive messages (one multi-session process)
+│   ├── telegram-preview.sh            # Send terminal output as HTML
+│   ├── remote-notify.sh               # Unified notification control
+│   ├── cleanup-old-listeners.sh       # Kill legacy per-session listeners (called by ensure_multi_listener)
+│   └── cancel-pending-notification.sh # UserPromptSubmit hook
 └── commands/                     # Slash commands for Claude CLI
     ├── remote-notify.md          # /remote-notify <cmd>
     └── remote-preview-output.md  # /remote-preview-output [args]
@@ -431,9 +439,11 @@ claude-remote
 
 ### Messages not reaching Claude
 
-1. Check listener is running: `claude-remote --list`
+1. Check the multi-session listener is running: `claude-remote --list` (look for `Multi-session listener: ✅`)
 2. Check Topic ID matches: compare config with `get-topic-ids.sh` output
-3. Check logs: `tail -f ~/.claude/logs/listener-myproject.log`
+3. Check logs: `tail -f ~/.claude/logs/listener-multi.log`
+4. If the log shows `Skipping <session>: ...` for the session you expect to receive messages, the listener has discarded that config (mismatched bot token, duplicate topic ID, missing topic ID, or missing chat ID — see "Session config rejected at startup" below).
+5. If the log shows repeated `Conflict: terminated by other getUpdates request`, another process is polling the same bot token. Run `~/.claude/hooks/cleanup-old-listeners.sh` to kill any legacy per-session listeners, then restart the multi listener.
 
 ### Bot not receiving messages in group
 
@@ -467,9 +477,22 @@ This means Group Privacy is still enabled OR the bot needs to be re-added:
 
 ### Listener starts but immediately stops
 
-1. Check config file exists and has correct permissions (600)
+1. Check that at least one session config in `~/.claude/sessions/*.conf` exists with correct permissions (600).
 2. Check bot token is valid: `curl https://api.telegram.org/bot<TOKEN>/getMe`
-3. Review log: `tail -50 ~/.claude/logs/listener-<session>.log`
+3. Review log: `tail -50 ~/.claude/logs/listener-multi.log`
+4. If the log says `Listener already running (PID: N). Only one instance allowed.` — that is the startup guard refusing to spawn a second multi-session listener; the existing PID `N` already owns Telegram polling.
+
+### Session config rejected at startup
+
+The multi-session listener requires every loaded session to share one bot token and chat ID and to have a unique, non-empty Topic ID. At startup it walks `~/.claude/sessions/*.conf` and logs `Skipping <session>: <reason>` for any config that fails the check. Common reasons:
+
+- `different bot token` — the first config loaded wins; other sessions must use the same bot
+- `different chat ID` — same: all sessions route into the same forum group
+- `duplicate topic ID N` — two configs claim the same topic; rename or repoint one
+- `no topic ID (required for multi-session)` — set `TELEGRAM_TOPIC_ID` in the config
+- `missing bot token or chat ID` — fill in the config
+
+Fix the offending config and restart the multi-session listener for it to be re-discovered.
 
 ## Edge Cases & Known Behaviors
 
@@ -477,11 +500,11 @@ This means Group Privacy is still enabled OR the bot needs to be re-added:
 |----------|----------|
 | No session config exists | Falls back to global `~/.claude/telegram-remote.conf` |
 | No Topic ID + multiple sessions | Warning displayed, user must confirm to continue |
-| Same Topic ID on two sessions | **Blocked** - second session refuses to start |
+| Same Topic ID on two sessions | **Blocked** at session start (`check_topic_conflicts` walks `sessions/*.conf`); the multi-session listener also skips the duplicate at startup |
 | Listener crashes | Auto-retries up to 3 times with exponential backoff; notifies via Telegram |
-| Listener gives up after 3 retries | Sends final "crashed" notification; must restart manually |
-| Ctrl-C in Claude | Claude exits → shell shows options → typing `exit` kills listener too |
-| `exit` from tmux shell | Listener automatically stopped, tmux session closes |
+| Listener gives up after 3 retries | Sends final "crashed" notification; messaging is down for every session until the next `claude-remote <session>` call re-runs `ensure_multi_listener` (or you start it manually) |
+| Ctrl-C in Claude | Claude exits → shell shows options → typing `exit` closes the tmux session; the shared listener keeps running for other sessions |
+| `exit` from tmux shell | tmux session closes; the shared multi-session listener is **NOT** stopped (other sessions still need it) |
 | Detach with Ctrl-b, d | Everything keeps running (Claude, listener, tmux) |
 | Session name with special chars | Sanitized to alphanumeric, underscore, hyphen only |
 | `/clear` when tmux not running | Shows error message, no action |
@@ -490,7 +513,7 @@ This means Group Privacy is still enabled OR the bot needs to be re-added:
 | `/preview back` without number | Defaults to `back 0` (current response) |
 | `/notify` without subcommand | Shows help (same as `/notify help`) |
 | `/notify start` when already running | Shows "already running" message, no action |
-| `/notify kill` from Telegram | Works - kills the listener that received the command |
+| `/notify kill` from Telegram | Kills the **shared** multi-session listener — every other active claude-remote session stops receiving messages until the listener is restarted |
 | Existing `settings.json` | Hooks are merged, not overwritten; backup created |
 | Notifications disabled | Listener still runs (can receive messages, just no outbound alerts) |
 | Chat ID empty during setup | Setup continues but test message will fail |
@@ -603,14 +626,29 @@ python3 -m pytest tests/test_security.py -v
 - Variable substitution uses `awk` instead of `sed` (prevents injection)
 
 ### Session Isolation
-- Each listener only processes messages from its configured topic
-- Messages from unauthorized chats/topics are ignored
+- The single multi-session listener routes each message to a tmux session by matching `message_thread_id` against the `TELEGRAM_TOPIC_ID` in `~/.claude/sessions/<name>.conf`
+- Messages from unauthorized chats or unknown topics are dropped on the floor (logged at INFO level)
 - Safe environment variable whitelist (dangerous vars like LD_PRELOAD excluded)
 
 ### Local Processing
 - All communication stays local (no cloud servers)
 - Listener runs on your machine, not Telegram's servers
 - Bot token never leaves your system except for Telegram API calls
+
+## Operational Notes & Residual Risks
+
+The multi-session listener architecture (issue #37) eliminates the per-session `getUpdates` conflict, but the design leaves a few sharp edges worth knowing about:
+
+- **No watchdog.** If the listener crashes past `MAX_RESTART_ATTEMPTS` (3 restarts with exponential backoff), messaging stops for *every* claude-remote session until something calls `ensure_multi_listener` again. That happens automatically the next time you run `claude-remote <session>` on this host, but a long-lived session that never restarts will silently lose messages. If a crash notification arrives in Telegram and no one runs `claude-remote` for hours, manually restart:
+  ```bash
+  ~/.claude/hooks/cleanup-old-listeners.sh
+  nohup python3 ~/.claude/hooks/telegram-listener.py >> ~/.claude/logs/listener-multi.log 2>&1 &
+  ```
+- **Shared blast radius for `/notify kill` and `/remote-notify kill`.** Both commands stop the single listener — every active session loses inbound messages until it is restarted. There is no per-session pause in this path; use `/notify off` to silence *outbound* notifications for one session without taking the listener down.
+- **Copy-mode installs need a redeploy after a pull.** If you installed via `./setup-telegram-remote.sh` in copy mode (the default for end users), pulling fixes only updates the repo — re-run `./setup-telegram-remote.sh` to copy the new scripts into `~/.claude/`. Dev-mode (`./setup-telegram-remote.sh --dev`) symlinks everything, so a `git pull` is enough.
+- **Configs with mismatched credentials are silently skipped.** The listener locks in the bot token / chat ID of the first session config it loads (alphabetical order). Any later config with a different bot token, different chat ID, duplicate topic ID, or missing topic ID is logged as `Skipping <session>: <reason>` in `~/.claude/logs/listener-multi.log` and never receives messages. Audit the log when adding new sessions.
+- **No CI for this repo.** Tests under `tests/` are not run on push. Run the suite locally before merging (see "Running Tests" above). The new `tests/test_claude_remote.sh` cases (issue #37) are content-grep assertions that catch the obvious regression — someone re-adding `--session` to a listener spawn — but do not exercise real Telegram polling end to end.
+- **PID-file based startup guard is not crash-proof.** If the listener is `kill -9`'d, `listener-multi.pid` is left behind. The startup guard correctly detects this as a stale file (`Removing stale listener PID file (PID N not running)`) on the next start, but if some other unrelated process inherited that PID number, the guard will think the listener is already running and refuse to spawn. Delete the PID file by hand if you ever see that pathology.
 
 ## License
 
