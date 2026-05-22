@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+- Fix Telegram messages being silently dropped across multiple `claude-remote` sessions (Issue #37)
+  - `claude-remote start_session` and `hooks/remote-notify.sh cmd_start` no longer spawn per-session `telegram-listener.py --session NAME` processes; they ensure a single multi-session listener instead
+  - Per-session listeners conflicted on the shared bot token because Telegram permits only one `getUpdates` poller per bot — whichever listener won the race filtered messages by its own `TELEGRAM_TOPIC_ID` and dropped everything that did not match
+  - `claude-remote --kill <session>` and the tmux cleanup wrapper no longer terminate the listener, since it now serves every active session
+  - `check_topic_conflicts` walks session configs (not listener PID files) to detect duplicate topic IDs
+  - Legacy per-session PID files are cleaned up automatically when the multi-session listener is started
+
 ### Added
 - `claude-remote init` — one-shot session bootstrap that auto-creates a Telegram forum topic, writes the session config, and launches the session. Supports `--name`, `--topic-name`, `--reuse-existing`, `--non-interactive`, `--force`, `--no-test-message`, `--no-start`.
 - Local topic registry at `~/.claude/topics-cache.conf` to support name-based dedup.
