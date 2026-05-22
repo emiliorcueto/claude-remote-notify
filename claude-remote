@@ -78,12 +78,12 @@ session_exists() {
     tmux has-session -t "$tmux_name" 2>/dev/null
 }
 
-listener_running() {
-    local session="$1"
-    local pid_file="$PIDS_DIR/listener-$session.pid"
-    
-    if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file")
+MULTI_LISTENER_PID_FILE="$PIDS_DIR/listener-multi.pid"
+MULTI_LISTENER_LOG="$LOGS_DIR/listener-multi.log"
+
+multi_listener_running() {
+    if [ -f "$MULTI_LISTENER_PID_FILE" ]; then
+        local pid=$(cat "$MULTI_LISTENER_PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
             return 0
         fi
@@ -91,14 +91,67 @@ listener_running() {
     return 1
 }
 
-get_listener_pid() {
-    local session="$1"
-    local pid_file="$PIDS_DIR/listener-$session.pid"
-
-    if [ -f "$pid_file" ]; then
-        cat "$pid_file"
+get_multi_listener_pid() {
+    if [ -f "$MULTI_LISTENER_PID_FILE" ]; then
+        cat "$MULTI_LISTENER_PID_FILE"
     else
         echo ""
+    fi
+}
+
+# Kill any legacy single-session listener processes left over from the
+# pre-multi-session design. These conflict with the multi listener on the
+# shared Telegram bot token (see issue #37).
+cleanup_legacy_listeners() {
+    local cleanup_script="$HOOKS_DIR/cleanup-old-listeners.sh"
+    local found=false
+
+    shopt -s nullglob
+    for pid_file in "$PIDS_DIR"/listener-*.pid; do
+        [ "$(basename "$pid_file")" = "listener-multi.pid" ] && continue
+        found=true
+        break
+    done
+    shopt -u nullglob
+
+    [ "$found" = "false" ] && return 0
+
+    if [ -x "$cleanup_script" ]; then
+        info "Cleaning up legacy per-session listeners..."
+        "$cleanup_script" >/dev/null 2>&1 || true
+    else
+        # Fallback: kill by PID file directly
+        shopt -s nullglob
+        for pid_file in "$PIDS_DIR"/listener-*.pid; do
+            [ "$(basename "$pid_file")" = "listener-multi.pid" ] && continue
+            local pid=$(cat "$pid_file" 2>/dev/null)
+            [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+            rm -f "$pid_file"
+        done
+        shopt -u nullglob
+    fi
+}
+
+ensure_multi_listener() {
+    cleanup_legacy_listeners
+
+    if multi_listener_running; then
+        info "Multi-session listener already running (PID: $(get_multi_listener_pid))"
+        return 0
+    fi
+
+    info "Starting multi-session Telegram listener..."
+    mkdir -p "$LOGS_DIR" "$PIDS_DIR"
+
+    nohup python3 "$HOOKS_DIR/telegram-listener.py" \
+        >> "$MULTI_LISTENER_LOG" 2>&1 &
+
+    sleep 1
+
+    if multi_listener_running; then
+        success "Multi-session listener started (PID: $(get_multi_listener_pid))"
+    else
+        warn "Listener may have failed to start. Check: $MULTI_LISTENER_LOG"
     fi
 }
 
@@ -142,38 +195,40 @@ list_sessions() {
     echo -e "${CYAN}                    Claude Sessions                         ${NC}"
     echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
     echo ""
-    
+
+    # One multi-session listener serves every session
+    if multi_listener_running; then
+        echo -e "  Multi-session listener: ✅ (PID: $(get_multi_listener_pid))"
+    else
+        echo -e "  Multi-session listener: ❌"
+    fi
+    echo ""
+
     # Find all session configs
     local has_sessions=false
-    
+
     shopt -s nullglob
     for config in "$SESSIONS_DIR"/*.conf; do
         has_sessions=true
-        
+
         local session=$(basename "$config" .conf)
         local tmux_name=$(get_tmux_session_name "$session")
-        
+
         # Check statuses
         local tmux_status="❌"
-        local listener_status="❌"
-        
+
         if session_exists "$session"; then
             tmux_status="✅"
         fi
-        
-        if listener_running "$session"; then
-            listener_status="✅"
-        fi
-        
+
         # Get topic ID from config
         local topic_id=""
         if [ -f "$config" ]; then
             topic_id=$(grep "TELEGRAM_TOPIC_ID" "$config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
         fi
-        
+
         echo -e "  ${GREEN}$session${NC}"
         echo "    tmux ($tmux_name): $tmux_status"
-        echo "    Listener: $listener_status"
         if [ -n "$topic_id" ]; then
             echo "    Topic ID: $topic_id"
         fi
@@ -228,14 +283,13 @@ show_status() {
         warn "tmux session: $tmux_name (not running)"
     fi
     
-    # Listener status
-    if listener_running "$session"; then
-        local pid=$(get_listener_pid "$session")
-        success "Listener: PID $pid (running)"
+    # Listener status (shared across all sessions)
+    if multi_listener_running; then
+        success "Multi-session listener: PID $(get_multi_listener_pid) (running)"
     else
-        warn "Listener: not running"
+        warn "Multi-session listener: not running"
     fi
-    
+
     echo ""
 }
 
@@ -276,28 +330,20 @@ check_topic_conflicts() {
         return
     fi
     
-    # Check if another listener is using the same Topic ID
+    # Check if another session config claims the same Topic ID. The multi
+    # listener routes by topic, so duplicate topic IDs would cause ambiguous
+    # routing regardless of which sessions are currently active.
     shopt -s nullglob
-    for pid_file in "$PIDS_DIR"/listener-*.pid; do
-        local other_session=$(basename "$pid_file" .pid | sed 's/listener-//')
-        
+    for other_config in "$SESSIONS_DIR"/*.conf; do
+        local other_session=$(basename "$other_config" .conf)
+
         # Skip self
         [ "$other_session" = "$session" ] && continue
-        
-        # Check if that listener is running
-        if [ -f "$pid_file" ]; then
-            local pid=$(cat "$pid_file")
-            if kill -0 "$pid" 2>/dev/null; then
-                # Get that session's topic ID
-                local other_config="$SESSIONS_DIR/$other_session.conf"
-                if [ -f "$other_config" ]; then
-                    local other_topic=$(grep "TELEGRAM_TOPIC_ID" "$other_config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-                    
-                    if [ "$my_topic" = "$other_topic" ] && [ -n "$my_topic" ]; then
-                        error "Topic ID $my_topic is already in use by session '$other_session'"
-                    fi
-                fi
-            fi
+
+        local other_topic=$(grep "TELEGRAM_TOPIC_ID" "$other_config" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+
+        if [ "$my_topic" = "$other_topic" ] && [ -n "$my_topic" ]; then
+            error "Topic ID $my_topic is already configured for session '$other_session'"
         fi
     done
     shopt -u nullglob
@@ -342,16 +388,8 @@ cleanup() {
     echo "  Cleaning up session: $CLAUDE_SESSION"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Kill listener
-    PID_FILE="$HOME/.claude/pids/listener-$CLAUDE_SESSION.pid"
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "Stopping listener (PID: $PID)..."
-            kill "$PID" 2>/dev/null
-        fi
-        rm -f "$PID_FILE"
-    fi
+    # NOTE: do not kill the Telegram listener — it is multi-session and
+    # serves every other active claude-remote session.
 
     # Clean up media temp files for this session
     rm -f /tmp/claude-telegram/$CLAUDE_SESSION-* 2>/dev/null
@@ -387,23 +425,11 @@ CLEANUP
     # Enable mouse mode for proper touchpad scrolling (always apply, even on reattach)
     tmux set-option -t "$tmux_name" mouse on
 
-    # Start listener if not running
-    if ! listener_running "$session"; then
-        info "Starting Telegram listener..."
-        
-        nohup python3 "$HOOKS_DIR/telegram-listener.py" --session "$session" \
-            >> "$LOGS_DIR/listener-$session.log" 2>&1 &
-        
-        sleep 1
-        
-        if listener_running "$session"; then
-            success "Listener started (PID: $(get_listener_pid "$session"))"
-        else
-            warn "Listener may have failed to start. Check: $LOGS_DIR/listener-$session.log"
-        fi
-    else
-        info "Listener already running (PID: $(get_listener_pid "$session"))"
-    fi
+    # Ensure the multi-session Telegram listener is running. One listener
+    # polls Telegram on behalf of every claude-remote session and routes
+    # messages by topic ID — running per-session listeners would conflict
+    # on the shared bot token (see issue #37).
+    ensure_multi_listener
     
     # Send startup notification if enabled
     if [ -f "$CLAUDE_HOME/notifications-enabled" ]; then
@@ -429,20 +455,14 @@ CLEANUP
 stop_session() {
     local session="$1"
     local tmux_name=$(get_tmux_session_name "$session")
-    
+
     info "Stopping session: $session"
-    
-    # Stop listener
-    if listener_running "$session"; then
-        local pid=$(get_listener_pid "$session")
-        info "Stopping listener (PID: $pid)"
-        kill "$pid" 2>/dev/null || true
-        rm -f "$PIDS_DIR/listener-$session.pid"
-        success "Listener stopped"
-    else
-        info "Listener not running"
-    fi
-    
+
+    # NOTE: do not kill the multi-session Telegram listener — it serves every
+    # other claude-remote session. Clean up stale per-session PID files left
+    # over from older versions instead.
+    rm -f "$PIDS_DIR/listener-$session.pid"
+
     # Kill tmux session
     if session_exists "$session"; then
         info "Killing tmux session: $tmux_name"
@@ -451,7 +471,7 @@ stop_session() {
     else
         info "tmux session not running"
     fi
-    
+
     echo ""
     success "Session '$session' stopped"
 }

@@ -80,7 +80,9 @@ get_config_file() {
 }
 
 get_pid_file() {
-    echo "$CLAUDE_HOME/pids/listener-$SESSION_NAME.pid"
+    # The Telegram listener runs in multi-session mode: one process serves
+    # every session on this host. See issue #37.
+    echo "$CLAUDE_HOME/pids/listener-multi.pid"
 }
 
 listener_running() {
@@ -210,53 +212,54 @@ cmd_config() {
 cmd_start() {
     if listener_running; then
         local pid=$(cat "$(get_pid_file)")
-        echo -e "${YELLOW}!${NC} Listener already running (PID: $pid)"
+        echo -e "${YELLOW}!${NC} Multi-session listener already running (PID: $pid)"
         return 0
     fi
-    
+
     local listener="$CLAUDE_HOME/hooks/telegram-listener.py"
-    
+
     if [ ! -f "$listener" ]; then
         echo -e "${RED}✗${NC} Listener not found: $listener"
         return 1
     fi
-    
-    echo "Starting Telegram listener for session: $SESSION_NAME"
-    
+
+    echo "Starting multi-session Telegram listener..."
+
     mkdir -p "$CLAUDE_HOME/logs" "$CLAUDE_HOME/pids"
-    
-    nohup python3 "$listener" --session "$SESSION_NAME" \
-        >> "$CLAUDE_HOME/logs/listener-$SESSION_NAME.log" 2>&1 &
-    
+
+    nohup python3 "$listener" \
+        >> "$CLAUDE_HOME/logs/listener-multi.log" 2>&1 &
+
     sleep 1
-    
+
     if listener_running; then
         local pid=$(cat "$(get_pid_file)")
         echo -e "${GREEN}✓${NC} Listener started (PID: $pid)"
-        send_telegram "🚀 [$SESSION_NAME] Listener started"
+        send_telegram "🚀 [$SESSION_NAME] Multi-session listener started"
     else
         echo -e "${RED}✗${NC} Failed to start listener"
-        echo "Check log: $CLAUDE_HOME/logs/listener-$SESSION_NAME.log"
+        echo "Check log: $CLAUDE_HOME/logs/listener-multi.log"
         return 1
     fi
 }
 
 cmd_kill() {
     local pid_file=$(get_pid_file)
-    
+
     if ! listener_running; then
-        echo -e "${YELLOW}!${NC} Listener not running"
+        echo -e "${YELLOW}!${NC} Multi-session listener not running"
         return 0
     fi
-    
+
     local pid=$(cat "$pid_file")
-    echo "Stopping listener (PID: $pid)..."
-    
+    echo -e "${YELLOW}!${NC} Stopping multi-session listener (PID: $pid)"
+    echo -e "${YELLOW}!${NC} This affects ALL claude-remote sessions on this host."
+
     kill "$pid" 2>/dev/null || true
     rm -f "$pid_file"
-    
+
     sleep 1
-    
+
     if ! listener_running; then
         echo -e "${GREEN}✓${NC} Listener stopped"
     else
