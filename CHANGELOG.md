@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
+- Fix `/preview N` ignoring the requested line count (Issue #41)
+  - Capture trimmed to the last N lines; trailing blank pane rows no longer count
+  - When fewer lines exist than requested, caption/title report actual vs requested count and the reason (fullscreen TUI → no tmux scrollback)
+  - Non-numeric or zero line counts rejected with an error
 - Fix Telegram messages being silently dropped across multiple `claude-remote` sessions (Issue #37)
   - `claude-remote start_session` and `hooks/remote-notify.sh cmd_start` no longer spawn per-session `telegram-listener.py --session NAME` processes; they ensure a single multi-session listener instead
   - Per-session listeners conflicted on the shared bot token because Telegram permits only one `getUpdates` poller per bot — whichever listener won the race filtered messages by its own `TELEGRAM_TOPIC_ID` and dropped everything that did not match
