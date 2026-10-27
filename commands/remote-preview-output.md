@@ -19,6 +19,8 @@ Send the current terminal output to your Telegram as a styled HTML document.
 | `/remote-preview-output back 1` | Previous exchange |
 | `/remote-preview-output help` | Show help with all arguments |
 
+With `"tui": "fullscreen"` there is no tmux scrollback, so at most one screen of lines is sent; the caption shows the actual count.
+
 ## Executing
 
 !`~/.claude/hooks/telegram-preview.sh $ARGUMENTS 2>&1`

@@ -41,6 +41,8 @@ show_help() {
     echo "  <N>       Send last N lines of terminal output"
     echo "            Example: /remote-preview-output 100"
     echo "            Example: /remote-preview-output 200"
+    echo "            Fullscreen TUI has no scrollback: at most"
+    echo "            one screen is available (caption says so)."
     echo ""
     echo "  back <N>  Send the Nth previous exchange"
     echo "            Attempts to detect prompt boundaries and"
@@ -78,6 +80,10 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         [0-9]*)
+            if [[ ! "$1" =~ ^[0-9]+$ ]] || [ "$1" -lt 1 ]; then
+                echo "Error: line count must be a positive integer (got '$1')"
+                exit 1
+            fi
             MODE="lines"
             VALUE="$1"
             shift
@@ -166,7 +172,33 @@ capture_terminal_with_ansi() {
         exit 1
     fi
     
-    tmux capture-pane -t "$TMUX_SESSION" -pS -"$lines" -e 2>/dev/null
+    # -S -N returns N scrollback lines PLUS the whole visible pane, so trim
+    # trailing blank rows and keep only the last N lines actually requested.
+    tmux capture-pane -t "$TMUX_SESSION" -pS -"$lines" -e 2>/dev/null \
+        | strip_trailing_blank_lines \
+        | tail -n "$lines"
+}
+
+# Drop trailing lines that are empty once ANSI escapes are removed
+strip_trailing_blank_lines() {
+    awk '
+    { line[NR] = $0 }
+    END {
+        n = NR
+        while (n > 0) {
+            s = line[n]
+            gsub(/\033\[[0-9;]*[A-Za-z]/, "", s)
+            if (s ~ /[^[:space:]]/) break
+            n--
+        }
+        for (i = 1; i <= n; i++) print line[i]
+    }
+    '
+}
+
+# 1 if the pane is on the alternate screen (fullscreen TUI → no scrollback)
+pane_alternate_on() {
+    tmux display-message -p -t "$TMUX_SESSION" '#{alternate_on}' 2>/dev/null || echo 0
 }
 
 convert_to_html() {
@@ -321,8 +353,21 @@ main() {
     case "$MODE" in
         lines)
             content=$(capture_terminal_with_ansi "$VALUE")
-            title="Terminal Output (last $VALUE lines)"
-            caption="📺 [$SESSION_NAME] Last $VALUE lines"
+            local captured=0
+            if [ -n "$content" ]; then
+                captured=$(printf '%s\n' "$content" | wc -l | tr -d ' ')
+            fi
+            if [ "$captured" -lt "$VALUE" ]; then
+                local reason="no more output available"
+                if [ "$(pane_alternate_on)" = "1" ]; then
+                    reason="fullscreen TUI has no scrollback"
+                fi
+                title="Terminal Output (last $captured of $VALUE lines requested)"
+                caption="📺 [$SESSION_NAME] Last $captured lines (requested $VALUE; $reason)"
+            else
+                title="Terminal Output (last $VALUE lines)"
+                caption="📺 [$SESSION_NAME] Last $VALUE lines"
+            fi
             ;;
         back)
             content=$(find_exchange "$VALUE")

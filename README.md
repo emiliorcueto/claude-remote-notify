@@ -386,6 +386,8 @@ You (in Claude): /remote-preview-output 100
 → Pinch to zoom, scroll through
 ```
 
+**Fullscreen TUI limits previews to one screen.** If Claude Code runs with `"tui": "fullscreen"` in `~/.claude/settings.json`, it draws on tmux's alternate screen, which keeps no scrollback. `/preview N` can then return at most one pane-height of lines (and `back N` can't reach exchanges that scrolled off). The caption reports this, e.g. `Last 41 lines (requested 200; fullscreen TUI has no scrollback)`. Remove the `tui` setting (and restart the session) to restore full-length previews.
+
 ## Media Support
 
 Send photos and documents via Telegram to share them with Claude:
@@ -511,6 +513,8 @@ Fix the offending config and restart the multi-session listener for it to be re-
 | `/compact` when tmux not running | Shows error message, no action |
 | `/preview` without arguments | Sends last 50 lines (default) |
 | `/preview back` without number | Defaults to `back 0` (current response) |
+| `/preview N` with fewer than N lines available | Sends what exists; caption shows actual vs requested count and the reason |
+| `/preview 0` or non-numeric count (e.g. `5x`) | Rejected with an error message |
 | `/notify` without subcommand | Shows help (same as `/notify help`) |
 | `/notify start` when already running | Shows "already running" message, no action |
 | `/notify kill` from Telegram | Kills the **shared** multi-session listener — every other active claude-remote session stops receiving messages until the listener is restarted |
